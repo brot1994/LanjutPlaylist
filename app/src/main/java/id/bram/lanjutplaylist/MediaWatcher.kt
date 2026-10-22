@@ -14,6 +14,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.service.notification.NotificationListenerService
+import android.view.KeyEvent
 import android.widget.Toast
 import id.bram.lanjutplaylist.Store.seekToPos
 
@@ -38,9 +39,7 @@ class MediaWatcher : NotificationListenerService() {
         fun norm(s: String?) = (s ?: "").lowercase().replace(Regex("\\s+"), " ").trim()
 
         fun open(c: Context, listId: String, vid: String?) {
-            val url = if (vid != null) "https://music.youtube.com/watch?v=$vid&list=$listId"
-            else "https://music.youtube.com/watch?list=$listId"
-            val i = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+            val i = Intent(Intent.ACTION_VIEW, Uri.parse(url(listId, vid)))
             if (c !is Activity) i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             try {
                 c.startActivity(Intent(i).setPackage(YTM))
@@ -51,25 +50,38 @@ class MediaWatcher : NotificationListenerService() {
             }
         }
 
-        /** Entry point from the UI. Must be called with the visible Activity. */
-        fun play(act: Activity, p: Playlist, fromStart: Boolean, msg: (String) -> Unit) {
+        fun url(listId: String, vid: String?) =
+            if (vid != null) "https://music.youtube.com/watch?v=$vid&list=$listId"
+            else "https://music.youtube.com/watch?list=$listId"
+
+        /** Entry point from the phone UI. Must be called with the visible Activity. */
+        fun play(act: Activity, p: Playlist, fromStart: Boolean, msg: (String) -> Unit) =
+            start(act, p, fromStart, viaSession = false, msg = msg)
+
+        /**
+         * Start playlist p, resuming at its last track.
+         * viaSession=false → open YT Music with a link (needs a visible Activity).
+         * viaSession=true  → tell YT Music's media session to play the link, without
+         *                    showing anything (used from Android Auto).
+         */
+        fun start(c: Context, p: Playlist, fromStart: Boolean, viaSession: Boolean, msg: (String) -> Unit) {
             instance?.record()
-            Store.setActive(act, p.id)
+            Store.setActive(c, p.id)
             val title = p.lastTitle
             if (fromStart || title == null) {
                 instance?.beginResume(null)
-                msg("Membuka ${p.name}…")
-                open(act, p.listId, null)
+                msg("Memutar ${p.name}…")
+                launch(c, p.listId, null, viaSession, msg)
                 return
             }
-            msg("Membuka ${p.name} — lanjut ke \"$title\"…")
+            msg("Memutar ${p.name} — lanjut ke \"$title\"…")
             Thread {
                 var vid = p.lastVideoId
                 var note: String? = null
                 if (vid == null) {
-                    var m = YtApi.cached(act, p.listId)?.let { YtApi.match(it, title, p.lastArtist) }
-                    if (m == null && Store.apiKey(act) != null) {
-                        val (fresh, err) = YtApi.refresh(act, p.listId)
+                    var m = YtApi.cached(c, p.listId)?.let { YtApi.match(it, title, p.lastArtist) }
+                    if (m == null && Store.apiKey(c) != null) {
+                        val (fresh, err) = YtApi.refresh(c, p.listId)
                         m = fresh?.let { YtApi.match(it, title, p.lastArtist) }
                         if (err != null) note = "Daftar lagu tidak bisa diambil ($err) — pakai cara lompat-lompat"
                     }
@@ -79,12 +91,19 @@ class MediaWatcher : NotificationListenerService() {
                     note?.let(msg)
                     instance?.beginResume(
                         Resume(p.id, title, p.lastArtist ?: "",
-                            if (act.seekToPos) p.lastPos else 0, hasVid = vid != null,
+                            if (c.seekToPos) p.lastPos else 0, hasVid = vid != null,
                             titleAtLaunch = instance?.nowTitle)
                     )
-                    open(act, p.listId, vid)
+                    launch(c, p.listId, vid, viaSession, msg)
                 }
             }.start()
+        }
+
+        private fun launch(c: Context, listId: String, vid: String?, viaSession: Boolean, msg: (String) -> Unit) {
+            if (!viaSession) { open(c, listId, vid); return }
+            val w = instance
+            if (w == null) { msg("Izin akses notifikasi belum aktif"); return }
+            w.playViaSession(Uri.parse(url(listId, vid)), msg)
         }
     }
 
@@ -161,6 +180,44 @@ class MediaWatcher : NotificationListenerService() {
         super.onDestroy()
     }
 
+    // ---------------------------------------------------------------- remote control (Android Auto)
+
+    /** Listeners (e.g. AutoService) notified whenever YT Music's state changes. */
+    val listeners = LinkedHashSet<() -> Unit>()
+
+    fun ytController(): MediaController? = controller
+
+    /** Ask YT Music's session to play a link; wake YT Music first if it has no session. */
+    fun playViaSession(uri: Uri, msg: (String) -> Unit) {
+        controller?.let { it.transportControls.playFromUri(uri, null); return }
+        msg("Membangunkan YouTube Music…")
+        wakeYtMusic()
+        val t0 = SystemClock.elapsedRealtime()
+        handler.post(object : Runnable {
+            override fun run() {
+                val c = controller
+                when {
+                    c != null -> handler.postDelayed({ c.transportControls.playFromUri(uri, null) }, 600)
+                    SystemClock.elapsedRealtime() - t0 > 10_000 -> {
+                        pending = null
+                        msg("YouTube Music tidak merespons — buka YT Music sekali di HP, lalu coba lagi")
+                    }
+                    else -> handler.postDelayed(this, 400)
+                }
+            }
+        })
+    }
+
+    /** Press "play" on YT Music's media-button receiver so it creates its media session. */
+    private fun wakeYtMusic() {
+        for (action in intArrayOf(KeyEvent.ACTION_DOWN, KeyEvent.ACTION_UP)) {
+            try {
+                sendBroadcast(Intent(Intent.ACTION_MEDIA_BUTTON).setPackage(YTM)
+                    .putExtra(Intent.EXTRA_KEY_EVENT, KeyEvent(action, KeyEvent.KEYCODE_MEDIA_PLAY)))
+            } catch (_: Exception) {}
+        }
+    }
+
     // ---------------------------------------------------------------- sessions
 
     private fun attach(list: List<MediaController>) {
@@ -176,6 +233,7 @@ class MediaWatcher : NotificationListenerService() {
         controller?.unregisterCallback(callback)
         controller = null
         nowPlaying = false
+        listeners.toList().forEach { try { it() } catch (_: Exception) {} }
     }
 
     private fun tick() {
@@ -184,6 +242,7 @@ class MediaWatcher : NotificationListenerService() {
         nowArtist = c?.metadata?.getString(MediaMetadata.METADATA_KEY_ARTIST)
         nowPlaying = c?.playbackState?.state == PlaybackState.STATE_PLAYING
         if (pending != null) stepResume() else record()
+        listeners.toList().forEach { try { it() } catch (_: Exception) {} }
     }
 
     private fun currentPos(st: PlaybackState?): Long {

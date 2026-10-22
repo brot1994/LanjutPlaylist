@@ -256,7 +256,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun showMenu(p: Playlist) {
         val items = arrayOf("Putar dari awal playlist", "Ganti nama", "Ganti link", "Pindah ke atas",
-            "Pindah ke bawah", "Hapus riwayat lagu terakhir", "Hapus playlist", "Baca ulang daftar lagu (API)")
+            "Pindah ke bawah", "Hapus riwayat lagu terakhir", "Hapus playlist", "Baca ulang daftar lagu (API)",
+            "Tes mode Android Auto (tanpa buka YT Music)")
         AlertDialog.Builder(this).setTitle(p.name).setItems(items) { _, i ->
             when (i) {
                 0 -> play(p, true)
@@ -279,6 +280,7 @@ class MainActivity : AppCompatActivity() {
                     .setPositiveButton("Hapus") { _, _ -> Store.remove(this, p.id); refreshList() }
                     .setNegativeButton("Batal", null).show()
                 7 -> if (Store.apiKey(this) == null) askApiKey() else prefetch(p, verbose = true)
+                8 -> MediaWatcher.start(this, p, fromStart = false, viaSession = true) { toast(it) }
             }
         }.show()
     }
