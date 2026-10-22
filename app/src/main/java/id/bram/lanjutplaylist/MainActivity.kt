@@ -27,6 +27,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var permBox: LinearLayout
     private lateinit var nowText: TextView
     private lateinit var listBox: LinearLayout
+    private lateinit var apiText: TextView
     private val handler = Handler(Looper.getMainLooper())
     private val refresher = object : Runnable {
         override fun run() { refreshNow(); handler.postDelayed(this, 2000) }
@@ -78,6 +79,13 @@ class MainActivity : AppCompatActivity() {
             buttonTintList = android.content.res.ColorStateList.valueOf(red)
             setOnCheckedChangeListener { _, b -> seekToPos = b }
         })
+        apiText = TextView(this).apply {
+            textSize = 14f; setTextColor(Color.WHITE)
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            background = rounded(card, 12)
+            setOnClickListener { askApiKey() }
+        }
+        root.addView(apiText, lp(top = 10))
         root.addView(TextView(this).apply {
             text = "Tips: di YouTube Music buka playlist → ⋮ / Bagikan → pilih \"Lanjut Playlist\" untuk menambah cepat."
             textSize = 13f; setTextColor(dim); setPadding(0, dp(10), 0, dp(10))
@@ -98,7 +106,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        refreshPerm(); refreshList()
+        refreshPerm(); refreshList(); refreshApi()
         handler.post(refresher)
     }
 
@@ -154,12 +162,32 @@ class MainActivity : AppCompatActivity() {
         permBox.addView(row, lp(bottom = 14))
     }
 
+    private fun refreshApi() {
+        apiText.text = if (Store.apiKey(this) != null)
+            "🔑 API key YouTube: terisi  (tap untuk ubah / baca ulang semua playlist)"
+        else "🔑 API key YouTube: belum diisi\nTanpa ini, lanjut lagu memakai cara \"next\" berulang-ulang (lebih lambat). Tap untuk isi."
+    }
+
+    private fun askApiKey() {
+        val et = EditText(this).apply { hint = "AIza..."; setText(Store.apiKey(this@MainActivity) ?: "") }
+        val pad = FrameLayout(this).apply { setPadding(dp(20), dp(8), dp(20), 0); addView(et) }
+        AlertDialog.Builder(this).setTitle("API key YouTube Data v3").setView(pad)
+            .setPositiveButton("Simpan & baca playlist") { _, _ ->
+                Store.setApiKey(this, et.text.toString())
+                refreshApi()
+                Store.all(this).forEach { prefetch(it, verbose = true) }
+            }
+            .setNeutralButton("Hapus") { _, _ -> Store.setApiKey(this, null); refreshApi() }
+            .setNegativeButton("Batal", null).show()
+    }
+
     private fun refreshNow() {
         val w = MediaWatcher.instance
         val activeName = Store.activeId(this)?.let { Store.get(this, it)?.name }
         nowText.text = when {
             w == null -> "Pemantau belum berjalan (cek izin akses notifikasi)"
             w.nowTitle == null -> "YouTube Music sedang tidak memutar apa-apa"
+            w.resuming -> "⏩ Sedang mencari lagu terakhir… (${w.nowTitle})"
             else -> (if (w.nowPlaying) "▶ " else "❚❚ ") + "${w.nowTitle} – ${w.nowArtist ?: ""}" +
                 "\nDicatat ke: " + (activeName ?: "— (tidak ada playlist aktif)")
         }
@@ -180,14 +208,16 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun playlistCard(p: Playlist, isActive: Boolean): View {
-        val box = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(14), dp(16), dp(14))
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(14), dp(10), dp(14))
             background = rounded(card, 14).apply { if (isActive) setStroke(dp(2), red) }
             isClickable = true
             setOnClickListener { play(p, false) }
             setOnLongClickListener { showMenu(p); true }
         }
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         box.addView(TextView(this).apply {
             text = (if (isActive) "♫  " else "") + p.name
             textSize = 20f; setTextColor(Color.WHITE); typeface = Typeface.DEFAULT_BOLD
@@ -202,23 +232,25 @@ class MainActivity : AppCompatActivity() {
         box.addView(TextView(this).apply {
             text = sub; textSize = 14f; setTextColor(dim); setPadding(0, dp(4), 0, 0)
         })
-        return box
+        row.addView(box, LinearLayout.LayoutParams(0, -2, 1f))
+        row.addView(TextView(this).apply {
+            text = "▶"; textSize = 24f; setTextColor(Color.WHITE); gravity = Gravity.CENTER
+            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(red) }
+            setOnClickListener { play(p, false) }
+        }, LinearLayout.LayoutParams(dp(56), dp(56)).apply { leftMargin = dp(10) })
+        return row
     }
 
     // ---------------------------------------------------------------- actions
 
     private fun play(p: Playlist, fromStart: Boolean) {
-        val w = MediaWatcher.instance
-        if (w != null) w.resume(p, fromStart)
-        else {
-            Store.setActive(this, p.id)
-            MediaWatcher.openInYtMusic(this, p, fromStart)
-        }
+        if (!hasAccess()) toast("Izin akses notifikasi belum aktif — lagu terakhir tidak akan dicatat")
+        MediaWatcher.play(this, p, fromStart) { toast(it) }
     }
 
     private fun showMenu(p: Playlist) {
         val items = arrayOf("Putar dari awal playlist", "Ganti nama", "Ganti link", "Pindah ke atas",
-            "Pindah ke bawah", "Hapus riwayat lagu terakhir", "Hapus playlist")
+            "Pindah ke bawah", "Hapus riwayat lagu terakhir", "Hapus playlist", "Baca ulang daftar lagu (API)")
         AlertDialog.Builder(this).setTitle(p.name).setItems(items) { _, i ->
             when (i) {
                 0 -> play(p, true)
@@ -240,6 +272,7 @@ class MainActivity : AppCompatActivity() {
                 6 -> AlertDialog.Builder(this).setMessage("Hapus \"${p.name}\"?")
                     .setPositiveButton("Hapus") { _, _ -> Store.remove(this, p.id); refreshList() }
                     .setNegativeButton("Batal", null).show()
+                7 -> if (Store.apiKey(this) == null) askApiKey() else prefetch(p, verbose = true)
             }
         }.show()
     }
@@ -268,10 +301,28 @@ class MainActivity : AppCompatActivity() {
                 if (id == null) { toast("Link playlist tidak dikenali (harus ada list=...)"); return@setPositiveButton }
                 val n = nameEt.text.toString().trim()
                 val auto = n.isEmpty()
-                Store.add(this, if (auto) defaultName(id) else n, id, auto)
+                val added = Store.add(this, if (auto) defaultName(id) else n, id, auto)
                 refreshList()
+                prefetch(added)
             }
             .setNegativeButton("Batal", null).show()
+    }
+
+    /** Grab the track list (and name, if left blank) in the background when an API key is set. */
+    private fun prefetch(p: Playlist, verbose: Boolean = false) {
+        val key = Store.apiKey(this) ?: return
+        Thread {
+            val (items, err) = YtApi.refresh(this, p.listId)
+            val title = if (p.nameAuto) YtApi.fetchTitle(key, p.listId) else null
+            if (title != null) Store.update(this, p.id) { it.name = title; it.nameAuto = false }
+            runOnUiThread {
+                refreshList()
+                if (verbose || err != null) toast(
+                    if (items != null) "${p.name}: ${items.size} lagu terbaca"
+                    else "${p.name}: gagal ambil daftar lagu ($err)"
+                )
+            }
+        }.start()
     }
 
     private fun defaultName(id: String) = when {

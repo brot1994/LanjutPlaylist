@@ -1,10 +1,12 @@
 package id.bram.lanjutplaylist
 
+import android.app.Activity
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.media.MediaMetadata
 import android.media.session.MediaController
+import android.media.session.MediaSession
 import android.media.session.MediaSessionManager
 import android.media.session.PlaybackState
 import android.net.Uri
@@ -16,10 +18,13 @@ import android.widget.Toast
 import id.bram.lanjutplaylist.Store.seekToPos
 
 /**
- * Runs in the background (bound by the system once notification access is granted).
- * Watches YouTube Music's media session, remembers the last track + position for the
- * playlist that is "active", and performs the resume (jump to track + seek) after
- * we open a playlist.
+ * Background watcher (bound by the system once notification access is granted).
+ * Remembers the last track + position for the active playlist and performs the resume.
+ *
+ * Findings from the device: YT Music exposes NO media/video ids and does NOT support
+ * SKIP_TO_QUEUE_ITEM. So to resume we either
+ *   1) know the video id (looked up via YouTube Data API) → open watch?v=ID&list=PL, or
+ *   2) open the playlist from the top and press "next" until the right title plays.
  */
 class MediaWatcher : NotificationListenerService() {
 
@@ -28,37 +33,76 @@ class MediaWatcher : NotificationListenerService() {
         var instance: MediaWatcher? = null
             private set
 
-        private val VIDEO_ID = Regex("^[A-Za-z0-9_-]{11}$")
+        private val main = Handler(Looper.getMainLooper())
 
         fun norm(s: String?) = (s ?: "").lowercase().replace(Regex("\\s+"), " ").trim()
 
-        /** Open a playlist in YT Music (works even if the watcher isn't running). */
-        fun openInYtMusic(c: Context, p: Playlist, fromStart: Boolean) {
-            val vid = if (fromStart) null else p.lastVideoId
-            val url = if (vid != null)
-                "https://music.youtube.com/watch?v=$vid&list=${p.listId}"
-            else
-                "https://music.youtube.com/watch?list=${p.listId}"
-            val i = Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        fun open(c: Context, listId: String, vid: String?) {
+            val url = if (vid != null) "https://music.youtube.com/watch?v=$vid&list=$listId"
+            else "https://music.youtube.com/watch?list=$listId"
+            val i = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+            if (c !is Activity) i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             try {
                 c.startActivity(Intent(i).setPackage(YTM))
             } catch (e: Exception) {
                 try { c.startActivity(i) } catch (_: Exception) {
-                    Toast.makeText(c, "YouTube Music tidak ditemukan", Toast.LENGTH_LONG).show()
+                    Toast.makeText(c, "YouTube Music tidak bisa dibuka", Toast.LENGTH_LONG).show()
                 }
             }
         }
+
+        /** Entry point from the UI. Must be called with the visible Activity. */
+        fun play(act: Activity, p: Playlist, fromStart: Boolean, msg: (String) -> Unit) {
+            instance?.record()
+            Store.setActive(act, p.id)
+            val title = p.lastTitle
+            if (fromStart || title == null) {
+                instance?.beginResume(null)
+                msg("Membuka ${p.name}…")
+                open(act, p.listId, null)
+                return
+            }
+            msg("Membuka ${p.name} — lanjut ke \"$title\"…")
+            Thread {
+                var vid = p.lastVideoId
+                var note: String? = null
+                if (vid == null) {
+                    var m = YtApi.cached(act, p.listId)?.let { YtApi.match(it, title, p.lastArtist) }
+                    if (m == null && Store.apiKey(act) != null) {
+                        val (fresh, err) = YtApi.refresh(act, p.listId)
+                        m = fresh?.let { YtApi.match(it, title, p.lastArtist) }
+                        if (err != null) note = "Daftar lagu tidak bisa diambil ($err) — pakai cara lompat-lompat"
+                    }
+                    vid = m?.videoId
+                }
+                main.post {
+                    note?.let(msg)
+                    instance?.beginResume(
+                        Resume(p.id, title, p.lastArtist ?: "",
+                            if (act.seekToPos) p.lastPos else 0, hasVid = vid != null,
+                            titleAtLaunch = instance?.nowTitle)
+                    )
+                    open(act, p.listId, vid)
+                }
+            }.start()
+        }
     }
 
-    private class Resume(
+    class Resume(
         val playlistId: String,
         val title: String,
         val artist: String,
         val pos: Long,
+        val hasVid: Boolean,
+        val titleAtLaunch: String?,
         val started: Long = SystemClock.elapsedRealtime(),
     ) {
-        var skipped = false
         var doneAt = 0L
+        var seenChange = false
+        var skips = 0
+        var lastSkipAt = 0L
+        var lastSkipTitle: String? = null
+        var firstTitle: String? = null
     }
 
     private val handler = Handler(Looper.getMainLooper())
@@ -67,10 +111,10 @@ class MediaWatcher : NotificationListenerService() {
     private var pending: Resume? = null
     private var launchedAt = 0L
 
-    /** Last thing we saw, for the UI. */
     var nowTitle: String? = null; private set
     var nowArtist: String? = null; private set
     var nowPlaying = false; private set
+    val resuming get() = pending != null
 
     private val sessionsListener = MediaSessionManager.OnActiveSessionsChangedListener { list ->
         attach(list ?: emptyList())
@@ -79,21 +123,16 @@ class MediaWatcher : NotificationListenerService() {
     private val callback = object : MediaController.Callback() {
         override fun onMetadataChanged(metadata: MediaMetadata?) { tick() }
         override fun onPlaybackStateChanged(state: PlaybackState?) { tick() }
-        override fun onQueueChanged(queue: MutableList<android.media.session.MediaSession.QueueItem>?) { tick() }
+        override fun onQueueChanged(queue: MutableList<MediaSession.QueueItem>?) { tick() }
         override fun onSessionDestroyed() { detach() }
     }
 
     private val periodic = object : Runnable {
-        override fun run() {
-            record()
-            handler.postDelayed(this, 5000)
-        }
+        override fun run() { record(); handler.postDelayed(this, 5000) }
     }
 
     private val resumeLoop = object : Runnable {
-        override fun run() {
-            if (stepResume()) handler.postDelayed(this, 600)
-        }
+        override fun run() { if (stepResume()) handler.postDelayed(this, 500) }
     }
 
     override fun onListenerConnected() {
@@ -155,124 +194,120 @@ class MediaWatcher : NotificationListenerService() {
         return maxOf(0, p)
     }
 
-    private fun videoIdOf(c: MediaController): String? {
-        val md = c.metadata ?: return null
-        md.getString(MediaMetadata.METADATA_KEY_MEDIA_ID)?.let { id ->
-            if (VIDEO_ID.matches(id)) return id
-            Regex("[?&]v=([A-Za-z0-9_-]{11})").find(id)?.let { return it.groupValues[1] }
-        }
-        val active = c.playbackState?.activeQueueItemId ?: -1
-        val item = c.queue?.firstOrNull { it.queueId == active }
-        item?.description?.mediaId?.let { if (VIDEO_ID.matches(it)) return it }
-        return null
-    }
-
     // ---------------------------------------------------------------- recording
 
-    /** Save the current track/position into the active playlist. */
+    /** Does this title belong to playlist p, as far as we know? null = don't know enough. */
+    private fun belongs(p: Playlist, title: String, artist: String?): Boolean? {
+        val items = YtApi.cached(this, p.listId)
+        if (!items.isNullOrEmpty()) return YtApi.match(items, title, artist) != null
+        val seen = Store.seen(this, p.id)
+        if (seen.size < 10) return null
+        return norm(title) in seen
+    }
+
     fun record() {
         if (pending != null) return
         val c = controller ?: return
         val activeId = Store.activeId(this) ?: return
         val md = c.metadata ?: return
         val title = md.getString(MediaMetadata.METADATA_KEY_TITLE) ?: return
+        val artist = md.getString(MediaMetadata.METADATA_KEY_ARTIST)
         val st = c.playbackState ?: return
         if (st.state == PlaybackState.STATE_NONE || st.state == PlaybackState.STATE_ERROR) return
 
-        val sinceLaunch = SystemClock.elapsedRealtime() - launchedAt
-        val qt = c.queueTitle?.toString()?.trim()?.ifEmpty { null }
-
-        // Detect a playlist switch made directly inside YT Music.
         val all = Store.all(this)
         val active = all.firstOrNull { it.id == activeId } ?: return
-        if (qt != null && sinceLaunch > 10_000) {
-            if (active.queueTitle == null) {
-                Store.update(this, activeId) {
-                    it.queueTitle = qt
-                    if (it.nameAuto) { it.name = qt; it.nameAuto = false }
-                }
-            } else if (norm(active.queueTitle) != norm(qt)) {
-                val other = all.firstOrNull { norm(it.queueTitle) == norm(qt) || norm(it.name) == norm(qt) }
-                Store.setActive(this, other?.id)
-                if (other == null) return
-                saveInto(other.id, c, md, title, st)
-                return
-            }
+
+        // Switched playlist inside YT Music (or autoplay radio after the end)?
+        if (SystemClock.elapsedRealtime() - launchedAt > 15_000 && belongs(active, title, artist) == false) {
+            val other = all.firstOrNull { it.id != activeId && belongs(it, title, artist) == true }
+            Store.setActive(this, other?.id)
+            if (other != null) saveInto(other, md, title, artist, st)
+            return
         }
-        saveInto(activeId, c, md, title, st)
+        saveInto(active, md, title, artist, st)
     }
 
-    private fun saveInto(id: String, c: MediaController, md: MediaMetadata, title: String, st: PlaybackState) {
+    private fun saveInto(p: Playlist, md: MediaMetadata, title: String, artist: String?, st: PlaybackState) {
         val pos = currentPos(st)
-        val vid = videoIdOf(c)
-        Store.update(this, id) {
-            if (norm(it.lastTitle) != norm(title)) it.lastVideoId = null
+        val sameTrack = norm(p.lastTitle) == norm(title)
+        val vid = if (sameTrack && p.lastVideoId != null) p.lastVideoId
+        else YtApi.cached(this, p.listId)?.let { YtApi.match(it, title, artist) }?.videoId
+        Store.update(this, p.id) {
             it.lastTitle = title
-            it.lastArtist = md.getString(MediaMetadata.METADATA_KEY_ARTIST)
-            if (vid != null) it.lastVideoId = vid
+            it.lastArtist = artist
+            it.lastVideoId = vid
             it.lastPos = pos
             it.lastDuration = md.getLong(MediaMetadata.METADATA_KEY_DURATION)
             it.updatedAt = System.currentTimeMillis()
         }
+        if (!sameTrack) Store.addSeen(this, p.id, listOf(norm(title)))
     }
 
     // ---------------------------------------------------------------- resume
 
-    /** Called from the UI when the user taps a playlist. */
-    fun resume(p: Playlist, fromStart: Boolean) {
-        record() // save the playlist we're leaving
-        Store.setActive(this, p.id)
+    fun beginResume(r: Resume?) {
         launchedAt = SystemClock.elapsedRealtime()
-        pending = if (!fromStart && p.lastTitle != null)
-            Resume(p.id, p.lastTitle!!, p.lastArtist ?: "", if (seekToPos) p.lastPos else 0)
-        else null
-        openInYtMusic(this, p, fromStart)
+        pending = r
         handler.removeCallbacks(resumeLoop)
-        if (pending != null) handler.postDelayed(resumeLoop, 800)
+        if (r != null) handler.postDelayed(resumeLoop, 800)
+    }
+
+    private fun finish(msg: String?) {
+        pending = null
+        msg?.let { toast(it) }
     }
 
     /** One step of the resume state machine. Returns true to keep looping. */
     private fun stepResume(): Boolean {
         val r = pending ?: return false
         val now = SystemClock.elapsedRealtime()
-        if (now - r.started > 30_000) {
-            pending = null
-            toast("Lagu terakhir tidak ketemu, diputar dari awal playlist")
-            return false
-        }
+        val limit = if (r.hasVid) 30_000 else 240_000
+        if (now - r.started > limit) { finish("Lagu terakhir tidak ketemu, diputar dari awal"); return false }
         if (r.doneAt > 0) {
-            if (now - r.doneAt > 2500) { pending = null; return false }
+            if (now - r.doneAt > 2500) { finish(null); return false }
             return true
         }
         val c = controller ?: return true
         val title = c.metadata?.getString(MediaMetadata.METADATA_KEY_TITLE)
         val st = c.playbackState
+        val playing = st?.state == PlaybackState.STATE_PLAYING
+
+        // Wait until YT Music has actually switched to the new playlist.
+        if (!r.seenChange) {
+            if (title != null && norm(title) != norm(r.titleAtLaunch)) r.seenChange = true
+            else if (now - r.started > 7000) r.seenChange = true
+            else return true
+        }
 
         if (norm(title) == norm(r.title)) {
-            // Right track. Wait until it's actually playing, then seek.
-            if (st?.state != PlaybackState.STATE_PLAYING && now - r.started < 15_000) return true
+            if (!playing && now - r.started < 20_000) return true
             if (r.pos > 3000) {
                 val dur = c.metadata?.getLong(MediaMetadata.METADATA_KEY_DURATION) ?: 0
                 val target = if (dur > 0 && r.pos > dur - 5000) maxOf(0, dur - 5000) else r.pos
                 c.transportControls.seekTo(target)
             }
             r.doneAt = now
+            if (r.skips > 0) toast("Lanjut dari \"${r.title}\" (lompat ${r.skips} lagu)")
             return true
         }
 
-        // Wrong track: give YT Music a moment, then look for the track in the queue.
-        if (now - r.started > 3000 && !r.skipped) {
-            val q = c.queue
-            if (!q.isNullOrEmpty()) {
-                val match = q.firstOrNull {
-                    norm(it.description.title?.toString()) == norm(r.title) &&
-                        (r.artist.isEmpty() || norm(it.description.subtitle?.toString()).contains(norm(r.artist)))
-                } ?: q.firstOrNull { norm(it.description.title?.toString()) == norm(r.title) }
-                if (match != null) {
-                    c.transportControls.skipToQueueItem(match.queueId)
-                    r.skipped = true
-                }
-            }
+        if (r.hasVid) return true // YT Music should land on it by itself; just wait.
+
+        // Fallback: press "next" until the right track plays.
+        if (!playing) return true
+        if (r.firstTitle == null) r.firstTitle = title
+        else if (r.skips > 2 && norm(title) == norm(r.firstTitle)) {
+            finish("Lagu terakhir tidak ada di playlist ini"); return false
+        }
+        val changed = norm(title) != norm(r.lastSkipTitle)
+        if ((changed && now - r.lastSkipAt > 400) || now - r.lastSkipAt > 4000) {
+            if (r.skips >= 200) { finish("Lagu terakhir tidak ketemu"); return false }
+            if (r.skips == 0) toast("Mencari \"${r.title}\"…")
+            r.lastSkipTitle = title
+            r.lastSkipAt = now
+            r.skips++
+            c.transportControls.skipToNext()
         }
         return true
     }
@@ -281,6 +316,12 @@ class MediaWatcher : NotificationListenerService() {
         handler.post { Toast.makeText(this, msg, Toast.LENGTH_LONG).show() }
 
     // ---------------------------------------------------------------- diagnostics
+
+    private val actionNames = listOf(
+        "STOP", "PAUSE", "PLAY", "REWIND", "PREV", "NEXT", "FF", "RATING", "SEEK_TO", "PLAY_PAUSE",
+        "PLAY_FROM_MEDIA_ID", "PLAY_FROM_SEARCH", "SKIP_TO_QUEUE_ITEM", "PLAY_FROM_URI", "PREPARE",
+        "PREP_MEDIA_ID", "PREP_SEARCH", "PREP_URI", "SPEED"
+    )
 
     fun diagnostics(): String {
         val sb = StringBuilder()
@@ -300,7 +341,9 @@ class MediaWatcher : NotificationListenerService() {
         val st = c.playbackState
         sb.append("state: ").append(st?.state).append("  pos: ").append(currentPos(st))
             .append("  activeQueueItemId: ").append(st?.activeQueueItemId).append('\n')
-        sb.append("actions: ").append(st?.actions?.let { java.lang.Long.toBinaryString(it) }).append('\n')
+        val acts = st?.actions ?: 0
+        sb.append("actions: ").append(actionNames.filterIndexed { i, _ -> acts and (1L shl i) != 0L }.joinToString(" "))
+            .append('\n')
         sb.append("\n-- metadata --\n")
         c.metadata?.let { md ->
             for (k in md.keySet()) {
@@ -312,10 +355,15 @@ class MediaWatcher : NotificationListenerService() {
         sb.append("\n-- queue (").append(q?.size ?: "null").append(") --\n")
         q?.take(5)?.forEach {
             sb.append("#").append(it.queueId).append(" id=").append(it.description.mediaId)
-                .append(" | ").append(it.description.title).append(" | ").append(it.description.subtitle)
-                .append(" | uri=").append(it.description.mediaUri).append('\n')
+                .append(" | ").append(it.description.title).append(" | ").append(it.description.subtitle).append('\n')
         }
-        sb.append("\nvideoId terbaca: ").append(videoIdOf(c)).append('\n')
+        val active = Store.activeId(this)?.let { Store.get(this, it) }
+        sb.append("\nPlaylist aktif: ").append(active?.name)
+        active?.let {
+            sb.append("\nCache lagu: ").append(YtApi.cached(this, it.listId)?.size ?: "belum ada")
+            sb.append("\nvideoId tersimpan: ").append(it.lastVideoId)
+        }
+        sb.append("\nAPI key: ").append(if (Store.apiKey(this) != null) "terisi" else "belum")
         return sb.toString()
     }
 }

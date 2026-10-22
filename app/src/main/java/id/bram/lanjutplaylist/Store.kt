@@ -98,6 +98,21 @@ object Store {
     fun activeId(c: Context): String? = prefs(c).getString("active", null)
     fun setActive(c: Context, id: String?) = prefs(c).edit().putString("active", id).apply()
 
+    fun apiKey(c: Context): String? = prefs(c).getString("apiKey", null)?.trim()?.ifEmpty { null }
+    fun setApiKey(c: Context, k: String?) = prefs(c).edit().putString("apiKey", k?.trim()).apply()
+
+    /** Track titles we've seen while a playlist was active (to detect switches made inside YT Music). */
+    fun seen(c: Context, id: String): MutableSet<String> =
+        HashSet(c.getSharedPreferences("seen", Context.MODE_PRIVATE).getStringSet(id, emptySet()) ?: emptySet())
+
+    fun addSeen(c: Context, id: String, titles: Collection<String>) {
+        val sp = c.getSharedPreferences("seen", Context.MODE_PRIVATE)
+        val set = HashSet(sp.getStringSet(id, emptySet()) ?: emptySet())
+        val before = set.size
+        set.addAll(titles.filter { it.isNotEmpty() })
+        if (set.size != before && set.size <= 1500) sp.edit().putStringSet(id, set).apply()
+    }
+
     var Context.seekToPos: Boolean
         get() = prefs(this).getBoolean("seek", true)
         set(v) = prefs(this).edit().putBoolean("seek", v).apply()
