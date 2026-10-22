@@ -110,7 +110,7 @@ class MediaWatcher : NotificationListenerService() {
         }
 
         private fun resumeFor(c: Context, p: Playlist, hasVid: Boolean) = Resume(
-            p.id, p.service, p.lastTitle!!, p.lastArtist ?: "", p.lastVideoId,
+            p.id, p.listId, p.service, p.lastTitle!!, p.lastArtist ?: "", p.lastVideoId,
             if (c.seekToPos) p.lastPos else 0, hasVid,
             titleAtLaunch = instance?.controllerFor(p.service)?.metadata?.getString(MediaMetadata.METADATA_KEY_TITLE)
         )
@@ -138,6 +138,7 @@ class MediaWatcher : NotificationListenerService() {
 
     class Resume(
         val playlistId: String,
+        val listId: String,
         val service: String,
         val title: String,
         val artist: String,
@@ -313,6 +314,46 @@ class MediaWatcher : NotificationListenerService() {
 
     // ---------------------------------------------------------------- recording
 
+    private fun contextOf(c: MediaController): String? =
+        c.metadata?.getString("com.spotify.music.extra.CONTEXT_URI")?.ifEmpty { null }
+
+    private fun contextTitleOf(c: MediaController): String? =
+        c.metadata?.getString("com.spotify.music.extra.CONTEXT_TITLE")?.trim()?.ifEmpty { null }
+
+    /**
+     * Spotify tells us exactly which playlist/album is playing (CONTEXT_URI), so we can record
+     * into the right saved playlist even when it was started inside Spotify itself.
+     * Returns true if it handled the recording.
+     */
+    private fun recordSpotify(all: List<Playlist>, activeId: String?): Boolean {
+        val c = controllers[SPOTIFY] ?: return false
+        val ctx = contextOf(c) ?: return false
+        val md = c.metadata ?: return false
+        val title = md.getString(MediaMetadata.METADATA_KEY_TITLE) ?: return false
+        val st = c.playbackState ?: return false
+        val playing = st.state == PlaybackState.STATE_PLAYING
+        val active = all.firstOrNull { it.id == activeId }
+        val match = all.firstOrNull { it.service == "spotify" && it.listId == ctx }
+
+        if (match == null) {
+            // Something not in our list is playing on Spotify → let go of a Spotify playlist.
+            if (playing && active?.service == "spotify" &&
+                SystemClock.elapsedRealtime() - launchedAt > 15_000) Store.setActive(this, null)
+            return active?.service == "spotify" || playing
+        }
+        if (match.id != activeId) {
+            if (!playing) return active?.service == "spotify"
+            Store.setActive(this, match.id)
+        }
+        val ct = contextTitleOf(c)
+        if (ct != null && (match.nameAuto || match.name == "Play Queue")) {
+            Store.update(this, match.id) { it.name = ct; it.nameAuto = false }
+        }
+        if (!playing && norm(match.lastTitle) != norm(title) && match.lastTitle != null) return true
+        saveInto(match, c, md, title, md.getString(MediaMetadata.METADATA_KEY_ARTIST), st)
+        return true
+    }
+
     private fun trackIdOf(c: MediaController): String? =
         c.metadata?.getString(MediaMetadata.METADATA_KEY_MEDIA_ID)?.takeIf { it.startsWith("spotify:") }
 
@@ -332,8 +373,9 @@ class MediaWatcher : NotificationListenerService() {
 
     fun record() {
         if (pending != null) return
-        val activeId = Store.activeId(this) ?: return
         val all = Store.all(this)
+        if (recordSpotify(all, Store.activeId(this))) return
+        val activeId = Store.activeId(this) ?: return
         val active = all.firstOrNull { it.id == activeId } ?: return
         val c = controllerFor(active.service) ?: return
         val md = c.metadata ?: return
@@ -349,17 +391,6 @@ class MediaWatcher : NotificationListenerService() {
             it !== c && it.playbackState?.state == PlaybackState.STATE_PLAYING
         }
         if (otherPlaying && !playing && sinceLaunch > 15_000) { Store.setActive(this, null); return }
-
-        // Spotify: learn the playlist's queue title (usually its name) once it's playing.
-        if (active.service == "spotify" && playing && sinceLaunch in 6_000..60_000 && active.queueTitle == null) {
-            c.queueTitle?.toString()?.trim()?.ifEmpty { null }?.let { qt ->
-                Store.update(this, active.id) {
-                    it.queueTitle = qt
-                    if (it.nameAuto) { it.name = qt; it.nameAuto = false }
-                }
-                return
-            }
-        }
 
         // Switched playlist inside the app (or autoplay radio after the end)?
         if (playing && sinceLaunch > 15_000 && belongs(active, c, title, artist) == false) {
@@ -430,7 +461,14 @@ class MediaWatcher : NotificationListenerService() {
 
         // Wait until the app has actually switched to the new playlist.
         if (!r.seenChange) {
-            if (title != null && norm(title) != norm(r.titleAtLaunch)) r.seenChange = true
+            val ctx = if (r.service == "spotify") contextOf(c) else null
+            if (ctx != null) {
+                // Spotify reports the playing playlist exactly — wait for it to be ours.
+                if (ctx == r.listId) r.seenChange = true
+                else if (now - r.started < 15_000) return true
+                else { finish("Spotify belum memutar playlist ini — coba tekan ▶ lagi"); return false }
+            }
+            else if (title != null && norm(title) != norm(r.titleAtLaunch)) r.seenChange = true
             else if (now - r.started > 7000) r.seenChange = true
             else return true
         }
