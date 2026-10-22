@@ -483,6 +483,12 @@ class MediaWatcher : NotificationListenerService() {
             return true
         }
 
+        // Safety 1: we've left the playlist (end reached → Spotify recommendations / radio).
+        val ctx = contextOf(c)
+        if (r.skips > 0 && ctx != null && ctx != r.listId) {
+            c.transportControls.pause()
+            finish("Berhenti: lagu terakhir tidak ketemu di playlist ini"); return false
+        }
         // Back at the first track after jumping → the saved track isn't in this playlist.
         if (r.firstTrackId == null) r.firstTrackId = curId ?: title
         else if (r.skips > 0 && (curId ?: title) == r.firstTrackId) {
@@ -490,9 +496,19 @@ class MediaWatcher : NotificationListenerService() {
         }
         if (r.skips >= 400) { finish("Lagu terakhir tidak ketemu"); return false }
 
+        // Locate the CURRENT track inside the queue. If the queue hasn't caught up with the
+        // last batch of "next" presses yet, wait — counting from stale data overshoots.
         val q = c.queue.orEmpty()
-        val active = st?.activeQueueItemId ?: -1
-        val from = q.indexOfFirst { it.queueId == active }.let { if (it < 0) 0 else it }
+        val from = q.indexOfFirst { d ->
+            if (curId != null) d.description.mediaId == curId else norm(d.description.title?.toString()) == norm(title)
+        }
+        if (from < 0) {
+            if (now - r.lastSkipAt < 5000) return true
+            // Queue never lined up: fall back to one careful step.
+            c.transportControls.skipToNext()
+            r.skips++; r.lastSkipAt = now; r.batchUntil = now + 1500
+            return true
+        }
         val target = (from + 1 until q.size).firstOrNull { i ->
             val d = q[i].description
             if (r.trackId != null && d.mediaId != null) d.mediaId == r.trackId
@@ -500,13 +516,16 @@ class MediaWatcher : NotificationListenerService() {
         }
         val n = when {
             target != null -> target - from
-            q.size > from + 1 -> q.size - 1 - from   // not in view yet: jump to the end of what we see
-            else -> 1
+            // Safety 2: the queue isn't full (≈ the rest of the playlist is all visible) and
+            // the track isn't in it → it's not in this playlist.
+            q.size < 40 -> { finish("Lagu terakhir tidak ada di playlist ini"); return false }
+            else -> maxOf(1, q.size - 1 - from)
         }
         if (r.skips == 0) toast("Mencari \"${r.title}\"…")
-        repeat(n) { k -> handler.postDelayed({ c.transportControls.skipToNext() }, k * 250L) }
+        repeat(n) { k -> handler.postDelayed({ c.transportControls.skipToNext() }, k * 300L) }
         r.skips += n
-        r.batchUntil = now + n * 250L + 1800
+        r.lastSkipAt = now + n * 300L
+        r.batchUntil = now + n * 300L + 2000
         return true
     }
 
