@@ -71,7 +71,13 @@ class MainActivity : AppCompatActivity() {
         listBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(listBox)
 
-        root.addView(button("+  Tambah playlist", red) { showAddDialog("", null) }, lp(top = 6, bottom = 18))
+        val addRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        addRow.addView(button("🔍  Cari", red) {
+            startActivity(Intent(this, SearchActivity::class.java))
+        }, LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = dp(6) })
+        addRow.addView(button("+  Link", Color.parseColor("#424242")) { showAddDialog("", null) },
+            LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = dp(6) })
+        root.addView(addRow, lp(top = 6, bottom = 18))
 
         root.addView(CheckBox(this).apply {
             text = "Lanjut dari detik terakhir (bukan dari awal lagu)"

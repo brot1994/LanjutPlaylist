@@ -54,6 +54,38 @@ object YtApi {
         return out
     }
 
+    /** One playlist search result. */
+    data class Found(val listId: String, val title: String, val channel: String, val thumb: String?, var count: Int = -1)
+
+    /** Search public playlists on YouTube (costs 100 of the 10 000 daily quota units). */
+    fun search(key: String, query: String): List<Found> {
+        val q = URLEncoder.encode(query, "UTF-8")
+        val o = get("search?part=snippet&type=playlist&maxResults=25&q=$q", key)
+        val arr = o.optJSONArray("items") ?: JSONArray()
+        val out = ArrayList<Found>()
+        for (i in 0 until arr.length()) {
+            val it = arr.getJSONObject(i)
+            val id = it.optJSONObject("id")?.optString("playlistId")?.ifEmpty { null } ?: continue
+            val sn = it.getJSONObject("snippet")
+            val th = sn.optJSONObject("thumbnails")
+            val url = (th?.optJSONObject("medium") ?: th?.optJSONObject("default"))?.optString("url")
+            out.add(Found(id, android.text.Html.fromHtml(sn.optString("title"), 0).toString(),
+                sn.optString("channelTitle"), url))
+        }
+        // Track counts in one cheap call.
+        if (out.isNotEmpty()) try {
+            val ids = out.joinToString(",") { it.listId }
+            val d = get("playlists?part=contentDetails&maxResults=50&id=$ids", key).optJSONArray("items") ?: JSONArray()
+            val counts = HashMap<String, Int>()
+            for (i in 0 until d.length()) {
+                val x = d.getJSONObject(i)
+                counts[x.optString("id")] = x.optJSONObject("contentDetails")?.optInt("itemCount", -1) ?: -1
+            }
+            out.forEach { f -> f.count = counts[f.listId] ?: -1 }
+        } catch (_: Exception) {}
+        return out
+    }
+
     fun fetchTitle(key: String, listId: String): String? = try {
         get("playlists?part=snippet&id=$listId", key).optJSONArray("items")
             ?.optJSONObject(0)?.optJSONObject("snippet")?.optString("title")?.ifEmpty { null }

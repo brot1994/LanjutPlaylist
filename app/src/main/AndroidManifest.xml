@@ -32,6 +32,11 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".SearchActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+
         <service
             android:name=".MediaWatcher"
             android:exported="true"
