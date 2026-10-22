@@ -53,7 +53,7 @@ jobs:
       - name: Publish release (latest)
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.5.1-build${{ github.run_number }}
+          tag_name: v1.5.2-build${{ github.run_number }}
           name: Lanjut Playlist build ${{ github.run_number }}
           make_latest: true
           files: LanjutPlaylist-apk.zip

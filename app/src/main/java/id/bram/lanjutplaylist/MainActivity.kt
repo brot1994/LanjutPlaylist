@@ -65,6 +65,7 @@ class MainActivity : AppCompatActivity() {
             textSize = 14f; setTextColor(Color.WHITE)
             setPadding(dp(14), dp(10), dp(14), dp(10))
             background = rounded(Color.parseColor("#2A1A1A"), 12)
+            setOnClickListener { MediaWatcher.instance?.takeIf { it.resuming }?.cancelResume() }
         }
         root.addView(nowText, lp(bottom = 14))
 
@@ -193,7 +194,7 @@ class MainActivity : AppCompatActivity() {
         nowText.text = when {
             w == null -> "Pemantau belum berjalan (cek izin akses notifikasi)"
             w.nowTitle == null -> "YouTube Music / Spotify sedang tidak memutar apa-apa"
-            w.resuming -> "⏩ Sedang mencari lagu terakhir… (${w.nowTitle})"
+            w.resuming -> "⏩ Sedang mencari lagu terakhir… (${w.nowTitle})\nTap di sini untuk berhenti"
             else -> (if (w.nowPlaying) "▶ " else "❚❚ ") + (if (w.nowService == "spotify") "[Spotify] " else "") + "${w.nowTitle} – ${w.nowArtist ?: ""}" +
                 "\nDicatat ke: " + (activeName ?: "— (tidak ada playlist aktif)")
         }

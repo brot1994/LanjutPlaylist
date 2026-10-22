@@ -198,6 +198,17 @@ class MediaWatcher : NotificationListenerService() {
         try {
             m.addOnActiveSessionsChangedListener(sessionsListener, cn(), handler)
         } catch (_: SecurityException) { }
+        val sp = getSharedPreferences("lanjut", MODE_PRIVATE)
+        if (!sp.getBoolean("fix151", false)) {
+            Store.all(this).filter { it.service == "spotify" }.forEach { p ->
+                Store.update(this, p.id) {
+                    it.lastTitle = null; it.lastArtist = null; it.lastVideoId = null; it.lastPos = 0
+                    it.queueTitle = null
+                    if (it.name == "Play Queue") { it.name = "Playlist Spotify"; it.nameAuto = true }
+                }
+            }
+            sp.edit().putBoolean("fix151", true).apply()
+        }
         refreshSessions()
         handler.removeCallbacks(periodic)
         handler.post(periodic)
@@ -434,6 +445,9 @@ class MediaWatcher : NotificationListenerService() {
         if (r != null) handler.postDelayed(resumeLoop, 800)
     }
 
+    /** Stop an ongoing resume (e.g. from the app's status box). */
+    fun cancelResume() { if (pending != null) finish("Pencarian lagu dihentikan") }
+
     private fun finish(msg: String?) {
         pending = null
         msg?.let { toast(it) }
@@ -487,15 +501,19 @@ class MediaWatcher : NotificationListenerService() {
 
         if (r.hasVid) return true // YT Music should land on it by itself; just wait.
 
-        // Press "next" until the right track plays.
-        if (!playing) return true
+        // Press "next" until the right track plays. The user pausing stops the search.
+        if (!playing) {
+            val stopped = st?.state == PlaybackState.STATE_PAUSED || st?.state == PlaybackState.STATE_STOPPED
+            if (r.skips > 0 && stopped && now - r.lastSkipAt > 1500) { finish("Pencarian lagu dihentikan"); return false }
+            return true
+        }
         if (r.firstTitle == null) r.firstTitle = title
         else if (r.skips > 2 && norm(title) == norm(r.firstTitle)) {
             finish("Lagu terakhir tidak ada di playlist ini"); return false
         }
         val changed = norm(title) != norm(r.lastSkipTitle)
         if ((changed && now - r.lastSkipAt > 400) || now - r.lastSkipAt > 4000) {
-            if (r.skips >= 200) { finish("Lagu terakhir tidak ketemu"); return false }
+            if (r.skips >= 150) { finish("Lagu terakhir tidak ketemu di playlist ini"); return false }
             if (r.skips == 0) toast("Mencari \"${r.title}\"…")
             r.lastSkipTitle = title
             r.lastSkipAt = now
