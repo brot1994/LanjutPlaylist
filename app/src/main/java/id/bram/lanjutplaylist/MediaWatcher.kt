@@ -110,6 +110,7 @@ class MediaWatcher : NotificationListenerService() {
     private var controller: MediaController? = null
     private var pending: Resume? = null
     private var launchedAt = 0L
+    private var mismatches = 0
 
     var nowTitle: String? = null; private set
     var nowArtist: String? = null; private set
@@ -219,12 +220,19 @@ class MediaWatcher : NotificationListenerService() {
         val active = all.firstOrNull { it.id == activeId } ?: return
 
         // Switched playlist inside YT Music (or autoplay radio after the end)?
-        if (SystemClock.elapsedRealtime() - launchedAt > 15_000 && belongs(active, title, artist) == false) {
+        val playing = st.state == PlaybackState.STATE_PLAYING
+        if (playing && SystemClock.elapsedRealtime() - launchedAt > 15_000 &&
+            belongs(active, title, artist) == false) {
+            // Require it twice in a row (~5 s apart) before letting go of the playlist.
+            if (++mismatches < 2) return
+            mismatches = 0
             val other = all.firstOrNull { it.id != activeId && belongs(it, title, artist) == true }
             Store.setActive(this, other?.id)
             if (other != null) saveInto(other, md, title, artist, st)
             return
         }
+        mismatches = 0
+        if (!playing && norm(active.lastTitle) != norm(title) && active.lastTitle != null) return
         saveInto(active, md, title, artist, st)
     }
 
