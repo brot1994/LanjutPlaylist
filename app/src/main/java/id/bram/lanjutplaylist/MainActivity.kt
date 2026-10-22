@@ -54,7 +54,7 @@ class MainActivity : AppCompatActivity() {
             textSize = 28f; setTextColor(Color.WHITE); typeface = Typeface.DEFAULT_BOLD
         })
         root.addView(TextView(this).apply {
-            text = "Tap playlist untuk lanjut dari lagu terakhir di YouTube Music"
+            text = "Tap playlist untuk lanjut dari lagu terakhir — YouTube Music & Spotify"
             textSize = 14f; setTextColor(dim); setPadding(0, dp(2), 0, dp(14))
         })
 
@@ -93,7 +93,7 @@ class MainActivity : AppCompatActivity() {
         }
         root.addView(apiText, lp(top = 10))
         root.addView(TextView(this).apply {
-            text = "Tips: di YouTube Music buka playlist → ⋮ / Bagikan → pilih \"Lanjut Playlist\" untuk menambah cepat."
+            text = "Tips: di YouTube Music / Spotify buka playlist → Bagikan → pilih \"Lanjut Playlist\" untuk menambah cepat."
             textSize = 13f; setTextColor(dim); setPadding(0, dp(10), 0, dp(10))
         })
         root.addView(TextView(this).apply {
@@ -192,9 +192,9 @@ class MainActivity : AppCompatActivity() {
         val activeName = Store.activeId(this)?.let { Store.get(this, it)?.name }
         nowText.text = when {
             w == null -> "Pemantau belum berjalan (cek izin akses notifikasi)"
-            w.nowTitle == null -> "YouTube Music sedang tidak memutar apa-apa"
+            w.nowTitle == null -> "YouTube Music / Spotify sedang tidak memutar apa-apa"
             w.resuming -> "⏩ Sedang mencari lagu terakhir… (${w.nowTitle})"
-            else -> (if (w.nowPlaying) "▶ " else "❚❚ ") + "${w.nowTitle} – ${w.nowArtist ?: ""}" +
+            else -> (if (w.nowPlaying) "▶ " else "❚❚ ") + (if (w.nowService == "spotify") "[Spotify] " else "") + "${w.nowTitle} – ${w.nowArtist ?: ""}" +
                 "\nDicatat ke: " + (activeName ?: "— (tidak ada playlist aktif)")
         }
     }
@@ -205,7 +205,7 @@ class MainActivity : AppCompatActivity() {
         val active = Store.activeId(this)
         if (list.isEmpty()) {
             listBox.addView(TextView(this).apply {
-                text = "Belum ada playlist. Tambahkan dengan tombol di bawah atau lewat Bagikan dari YouTube Music."
+                text = "Belum ada playlist. Tambahkan dengan tombol di bawah atau lewat Bagikan dari YouTube Music / Spotify."
                 setTextColor(dim); textSize = 15f; setPadding(0, dp(8), 0, dp(16))
             })
         }
@@ -227,6 +227,13 @@ class MainActivity : AppCompatActivity() {
         box.addView(TextView(this).apply {
             text = (if (isActive) "♫  " else "") + p.name
             textSize = 20f; setTextColor(Color.WHITE); typeface = Typeface.DEFAULT_BOLD
+        })
+        box.addView(TextView(this).apply {
+            val sp = p.service == "spotify"
+            text = if (sp) "Spotify" else "YouTube Music"
+            textSize = 11f; typeface = Typeface.DEFAULT_BOLD
+            setTextColor(if (sp) Color.parseColor("#1DB954") else Color.parseColor("#FF6E66"))
+            setPadding(0, dp(2), 0, 0)
         })
         val sub = if (p.lastTitle == null) "Belum ada riwayat — mulai dari awal"
         else {
@@ -257,17 +264,21 @@ class MainActivity : AppCompatActivity() {
     private fun showMenu(p: Playlist) {
         val items = arrayOf("Putar dari awal playlist", "Ganti nama", "Ganti link", "Pindah ke atas",
             "Pindah ke bawah", "Hapus riwayat lagu terakhir", "Hapus playlist", "Baca ulang daftar lagu (API)",
-            "Tes mode Android Auto (tanpa buka YT Music)")
+            "Tes mode Android Auto (tanpa buka aplikasi musik)")
         AlertDialog.Builder(this).setTitle(p.name).setItems(items) { _, i ->
             when (i) {
                 0 -> play(p, true)
                 1 -> askText("Ganti nama", p.name) { t ->
                     Store.update(this, p.id) { it.name = t; it.nameAuto = false }; refreshList()
                 }
-                2 -> askText("Link / ID playlist", "https://music.youtube.com/playlist?list=${p.listId}") { t ->
-                    val id = Store.parseListId(t)
-                    if (id == null) toast("Link playlist tidak dikenali")
-                    else { Store.update(this, p.id) { it.listId = id; it.queueTitle = null }; refreshList() }
+                2 -> askText("Link / ID playlist",
+                    if (p.service == "spotify") p.listId else "https://music.youtube.com/playlist?list=${p.listId}") { t ->
+                    val link = Store.parseLink(t)
+                    if (link == null) toast("Link playlist tidak dikenali")
+                    else {
+                        Store.update(this, p.id) { it.service = link.first; it.listId = link.second; it.queueTitle = null }
+                        refreshList()
+                    }
                 }
                 3 -> { Store.move(this, p.id, -1); refreshList() }
                 4 -> { Store.move(this, p.id, 1); refreshList() }
@@ -279,7 +290,8 @@ class MainActivity : AppCompatActivity() {
                 6 -> AlertDialog.Builder(this).setMessage("Hapus \"${p.name}\"?")
                     .setPositiveButton("Hapus") { _, _ -> Store.remove(this, p.id); refreshList() }
                     .setNegativeButton("Batal", null).show()
-                7 -> if (Store.apiKey(this) == null) askApiKey() else prefetch(p, verbose = true)
+                7 -> if (p.service != "ytm") toast("Khusus playlist YouTube Music")
+                    else if (Store.apiKey(this) == null) askApiKey() else prefetch(p, verbose = true)
                 8 -> MediaWatcher.start(this, p, fromStart = false, viaSession = true) { toast(it) }
             }
         }.show()
@@ -299,17 +311,18 @@ class MainActivity : AppCompatActivity() {
         }
         val nameEt = EditText(this).apply { hint = "Nama (kosongkan = otomatis)"; setText(name ?: "") }
         val linkEt = EditText(this).apply {
-            hint = "Link playlist YouTube Music"; setText(link)
+            hint = "Link playlist YouTube Music / Spotify"; setText(link)
             inputType = InputType.TYPE_TEXT_VARIATION_URI
         }
         box.addView(nameEt); box.addView(linkEt)
         AlertDialog.Builder(this).setTitle("Tambah playlist").setView(box)
             .setPositiveButton("Simpan") { _, _ ->
-                val id = Store.parseListId(linkEt.text.toString())
-                if (id == null) { toast("Link playlist tidak dikenali (harus ada list=...)"); return@setPositiveButton }
+                val link = Store.parseLink(linkEt.text.toString())
+                if (link == null) { toast("Link playlist tidak dikenali"); return@setPositiveButton }
+                val (service, id) = link
                 val n = nameEt.text.toString().trim()
                 val auto = n.isEmpty()
-                val added = Store.add(this, if (auto) defaultName(id) else n, id, auto)
+                val added = Store.add(this, if (auto) defaultName(id) else n, id, auto, service)
                 refreshList()
                 prefetch(added)
             }
@@ -318,6 +331,7 @@ class MainActivity : AppCompatActivity() {
 
     /** Grab the track list (and name, if left blank) in the background when an API key is set. */
     private fun prefetch(p: Playlist, verbose: Boolean = false) {
+        if (p.service != "ytm") return
         val key = Store.apiKey(this) ?: return
         Thread {
             val (items, err) = YtApi.refresh(this, p.listId)
@@ -335,6 +349,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun defaultName(id: String) = when {
         id == "LM" -> "Lagu yang disukai"
+        id.startsWith("spotify:") -> "Playlist Spotify ${Store.all(this).size + 1}"
         else -> "Playlist ${Store.all(this).size + 1}"
     }
 
@@ -343,8 +358,8 @@ class MainActivity : AppCompatActivity() {
         val text = i.getStringExtra(Intent.EXTRA_TEXT) ?: ""
         val subject = i.getStringExtra(Intent.EXTRA_SUBJECT)
         setIntent(Intent())
-        if (Store.parseListId(text) == null) {
-            toast("Yang dibagikan bukan playlist (tidak ada list=...)")
+        if (Store.parseLink(text) == null) {
+            toast("Yang dibagikan bukan link playlist YouTube Music / Spotify")
             return
         }
         // Text before the link is often the title.

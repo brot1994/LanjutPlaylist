@@ -10,6 +10,8 @@ data class Playlist(
     var name: String,
     var listId: String,
     var nameAuto: Boolean = false,
+    /** "ytm" or "spotify". For Spotify, listId is a full URI like spotify:playlist:ID */
+    var service: String = "ytm",
     var queueTitle: String? = null,
     var lastTitle: String? = null,
     var lastArtist: String? = null,
@@ -19,7 +21,7 @@ data class Playlist(
     var updatedAt: Long = 0,
 ) {
     fun toJson() = JSONObject().apply {
-        put("id", id); put("name", name); put("listId", listId); put("nameAuto", nameAuto)
+        put("id", id); put("name", name); put("listId", listId); put("nameAuto", nameAuto); put("service", service)
         put("queueTitle", queueTitle ?: JSONObject.NULL)
         put("lastTitle", lastTitle ?: JSONObject.NULL)
         put("lastArtist", lastArtist ?: JSONObject.NULL)
@@ -36,6 +38,7 @@ data class Playlist(
             name = o.optString("name"),
             listId = o.optString("listId"),
             nameAuto = o.optBoolean("nameAuto"),
+            service = o.optString("service", "ytm").ifEmpty { "ytm" },
             queueTitle = o.str("queueTitle"),
             lastTitle = o.str("lastTitle"),
             lastArtist = o.str("lastArtist"),
@@ -71,13 +74,13 @@ object Store {
         list.firstOrNull { it.id == id }?.let { block(it); saveAll(c, list) }
     }
 
-    fun add(c: Context, name: String, listId: String, nameAuto: Boolean): Playlist {
+    fun add(c: Context, name: String, listId: String, nameAuto: Boolean, service: String = "ytm"): Playlist {
         val list = all(c)
         list.firstOrNull { it.listId == listId }?.let {
             if (!nameAuto) { it.name = name; it.nameAuto = false }
             saveAll(c, list); return it
         }
-        val p = Playlist(UUID.randomUUID().toString(), name, listId, nameAuto)
+        val p = Playlist(UUID.randomUUID().toString(), name, listId, nameAuto, service)
         list.add(p); saveAll(c, list)
         return p
     }
@@ -116,6 +119,17 @@ object Store {
     var Context.seekToPos: Boolean
         get() = prefs(this).getBoolean("seek", true)
         set(v) = prefs(this).edit().putBoolean("seek", v).apply()
+
+    /** Recognise a YT Music / YouTube or Spotify playlist (or Spotify album) link. Returns service to listId. */
+    fun parseLink(text: String): Pair<String, String>? {
+        Regex("open\\.spotify\\.com/(?:intl-[a-z]+/)?(playlist|album)/([A-Za-z0-9]+)").find(text)?.let {
+            return "spotify" to "spotify:${it.groupValues[1]}:${it.groupValues[2]}"
+        }
+        Regex("spotify:(playlist|album):([A-Za-z0-9]+)").find(text)?.let {
+            return "spotify" to "spotify:${it.groupValues[1]}:${it.groupValues[2]}"
+        }
+        return parseListId(text)?.let { "ytm" to it }
+    }
 
     /** Pull a YouTube playlist id (list=...) out of any shared text / link. */
     fun parseListId(text: String): String? {

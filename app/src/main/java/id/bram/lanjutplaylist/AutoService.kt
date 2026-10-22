@@ -15,8 +15,8 @@ import androidx.media.MediaBrowserServiceCompat
 
 /**
  * Makes Lanjut Playlist show up in Android Auto as a media app.
- * It plays no audio itself: picking a playlist tells YouTube Music (through its media
- * session) to play it from the last track, and this app's player screen mirrors YT Music
+ * It plays no audio itself: picking a playlist tells YouTube Music / Spotify (through its media
+ * session) to play it from the last track, and this app's player screen mirrors that app
  * and forwards play/pause/next/prev/seek to it.
  */
 class AutoService : MediaBrowserServiceCompat() {
@@ -72,8 +72,8 @@ class AutoService : MediaBrowserServiceCompat() {
         if (parentId == "root") {
             val active = Store.activeId(this)
             for (p in Store.all(this)) {
-                val sub = p.lastTitle?.let { "Lanjut: $it" + (p.lastArtist?.let { a -> " – $a" } ?: "") }
-                    ?: "Mulai dari awal"
+                val sub = (if (p.service == "spotify") "Spotify · " else "YT Music · ") +
+                    (p.lastTitle?.let { "Lanjut: $it" + (p.lastArtist?.let { a -> " – $a" } ?: "") } ?: "Mulai dari awal")
                 val desc = MediaDescriptionCompat.Builder()
                     .setMediaId(p.id)
                     .setTitle((if (p.id == active) "♫ " else "") + p.name)
@@ -106,7 +106,7 @@ class AutoService : MediaBrowserServiceCompat() {
         override fun onSeekTo(pos: Long) { yt()?.seekTo(pos) }
     }
 
-    private fun yt() = MediaWatcher.instance?.ytController()?.transportControls
+    private fun yt() = MediaWatcher.instance?.currentController()?.transportControls
 
     /** "Play" with YT Music not running → resume the active (or first) playlist. */
     private fun resumeActive() {
@@ -123,7 +123,7 @@ class AutoService : MediaBrowserServiceCompat() {
     }
 
     private fun pushState() {
-        val c = MediaWatcher.instance?.ytController()
+        val c = MediaWatcher.instance?.currentController()
         val md = c?.metadata
         val st = c?.playbackState
 
