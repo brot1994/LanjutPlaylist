@@ -448,6 +448,25 @@ class MediaWatcher : NotificationListenerService() {
         if (r != null) handler.postDelayed(resumeLoop, 800)
     }
 
+    // ---------------------------------------------------------------- live info for the UI
+
+    /** Live state of an app's player, or null if it has no session. */
+    data class Live(val title: String?, val artist: String?, val pos: Long, val dur: Long, val playing: Boolean, val trackId: String?)
+
+    fun live(service: String): Live? {
+        val c = controllerFor(service) ?: return null
+        val md = c.metadata
+        val st = c.playbackState
+        return Live(
+            md?.getString(MediaMetadata.METADATA_KEY_TITLE), md?.getString(MediaMetadata.METADATA_KEY_ARTIST),
+            currentPos(st), md?.getLong(MediaMetadata.METADATA_KEY_DURATION) ?: 0,
+            st?.state == PlaybackState.STATE_PLAYING, trackIdOf(c)
+        )
+    }
+
+    fun pause(service: String) { controllerFor(service)?.transportControls?.pause() }
+    fun resumePlay(service: String) { controllerFor(service)?.transportControls?.play() }
+
     /** Stop an ongoing resume (e.g. from the app's status box). */
     fun cancelResume() { if (pending != null) finish("Pencarian lagu dihentikan") }
 

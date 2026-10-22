@@ -28,9 +28,14 @@ class MainActivity : AppCompatActivity() {
     private lateinit var nowText: TextView
     private lateinit var listBox: LinearLayout
     private lateinit var apiText: TextView
+    private var activeSub: TextView? = null
+    private var activeBtn: TextView? = null
+    private var activeBadge: TextView? = null
+    private var activeCard: Playlist? = null
+    private var listSig = ""
     private val handler = Handler(Looper.getMainLooper())
     private val refresher = object : Runnable {
-        override fun run() { refreshNow(); handler.postDelayed(this, 2000) }
+        override fun run() { refreshNow(); refreshLive(); handler.postDelayed(this, 1000) }
     }
 
     private val red = Color.parseColor("#E53935")
@@ -201,6 +206,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun refreshList() {
+        activeSub = null; activeBtn = null; activeBadge = null; activeCard = null
         listBox.removeAllViews()
         val list = Store.all(this)
         val active = Store.activeId(this)
@@ -221,7 +227,7 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(16), dp(14), dp(10), dp(14))
             background = rounded(card, 14).apply { if (isActive) setStroke(dp(2), red) }
             isClickable = true
-            setOnClickListener { play(p, false) }
+            setOnClickListener { onButton(p) }
             setOnLongClickListener { showMenu(p); true }
         }
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -229,7 +235,8 @@ class MainActivity : AppCompatActivity() {
             text = (if (isActive) "♫  " else "") + p.name
             textSize = 20f; setTextColor(Color.WHITE); typeface = Typeface.DEFAULT_BOLD
         })
-        box.addView(TextView(this).apply {
+        val badgeTv = TextView(this)
+        box.addView(badgeTv.apply {
             val sp = p.service == "spotify"
             text = if (sp) "Spotify" else "YouTube Music"
             textSize = 11f; typeface = Typeface.DEFAULT_BOLD
@@ -243,16 +250,67 @@ class MainActivity : AppCompatActivity() {
             "Terakhir: ${p.lastTitle}" + (p.lastArtist?.let { " – $it" } ?: "") +
                 "\n${fmt(p.lastPos)}" + (if (p.lastDuration > 0) " / ${fmt(p.lastDuration)}" else "") + "  ·  $ago"
         }
-        box.addView(TextView(this).apply {
+        val subTv = TextView(this).apply {
             text = sub; textSize = 14f; setTextColor(dim); setPadding(0, dp(4), 0, 0)
-        })
+        }
+        box.addView(subTv)
         row.addView(box, LinearLayout.LayoutParams(0, -2, 1f))
-        row.addView(TextView(this).apply {
+        val btn = TextView(this).apply {
             text = "▶"; textSize = 24f; setTextColor(Color.WHITE); gravity = Gravity.CENTER
             background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(red) }
-            setOnClickListener { play(p, false) }
-        }, LinearLayout.LayoutParams(dp(56), dp(56)).apply { leftMargin = dp(10) })
+            setOnClickListener { onButton(p) }
+        }
+        row.addView(btn, LinearLayout.LayoutParams(dp(56), dp(56)).apply { leftMargin = dp(10) })
+        if (isActive) { activeSub = subTv; activeBtn = btn; activeBadge = badgeTv; activeCard = p }
         return row
+    }
+
+    /** Is this playlist the active one AND its app is currently on its track? */
+    private fun liveFor(p: Playlist): MediaWatcher.Live? {
+        if (Store.activeId(this) != p.id) return null
+        val w = MediaWatcher.instance ?: return null
+        if (w.resuming) return null
+        return w.live(p.service)?.takeIf { it.title != null }
+    }
+
+    /** Update the active card every second: live position, playing/paused, ▶ / ❚❚ button. */
+    private fun refreshLive() {
+        val w = MediaWatcher.instance
+        // Rebuild the list when the active playlist or its track changes.
+        val act = Store.activeId(this)
+        val actP = act?.let { Store.get(this, it) }
+        val sig = "$act|${actP?.let { w?.live(it.service)?.title }}"
+        if (sig != listSig) { listSig = sig; refreshList(); return }
+
+        val p = activeCard ?: return
+        val l = liveFor(p)
+        val sub = activeSub ?: return
+        val btn = activeBtn ?: return
+        val badge = activeBadge ?: return
+        val sp = p.service == "spotify"
+        val appLabel = if (sp) "Spotify" else "YouTube Music"
+        if (l == null) {
+            btn.text = "▶"
+            badge.text = appLabel
+            return
+        }
+        badge.text = appLabel + if (l.playing) "  ·  ▶ SEDANG DIPUTAR" else "  ·  ❚❚ DIJEDA"
+        sub.text = "${l.title}" + (l.artist?.let { " – $it" } ?: "") +
+            "\n${fmt(l.pos)}" + (if (l.dur > 0) " / ${fmt(l.dur)}" else "")
+        sub.setTextColor(Color.WHITE)
+        btn.text = if (l.playing) "❚❚" else "▶"
+        btn.textSize = if (l.playing) 20f else 24f
+    }
+
+    private fun onButton(p: Playlist) {
+        val l = liveFor(p)
+        val w = MediaWatcher.instance
+        when {
+            l != null && l.playing -> w?.pause(p.service)
+            l != null && !l.playing -> w?.resumePlay(p.service)
+            else -> play(p, false)
+        }
+        handler.postDelayed({ refreshLive() }, 400)
     }
 
     // ---------------------------------------------------------------- actions
