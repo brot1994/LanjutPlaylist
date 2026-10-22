@@ -422,7 +422,9 @@ class MainActivity : AppCompatActivity() {
             return
         }
         // Text before the link is often the title.
-        val before = text.substringBefore("http").trim().trimEnd(':', '-', '–').trim()
+        var before = text.substringBefore("http").trim().trimEnd(':', '-', '–').trim()
+        // Spotify prefixes shares with e.g. "Give this playlist a listen: " / "Dengarkan playlist ini: ".
+        if (before.contains(": ")) before = before.substringAfter(": ").trim()
         showAddDialog(text, subject ?: before.ifEmpty { null })
     }
 

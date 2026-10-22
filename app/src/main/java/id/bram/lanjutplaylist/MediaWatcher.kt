@@ -360,7 +360,8 @@ class MediaWatcher : NotificationListenerService() {
             Store.setActive(this, match.id)
         }
         val ct = contextTitleOf(c)
-        if (ct != null && (match.nameAuto || match.name == "Play Queue")) {
+        val prefixed = ct != null && match.name != ct && match.name.endsWith(": $ct")
+        if (ct != null && (match.nameAuto || match.name == "Play Queue" || prefixed)) {
             Store.update(this, match.id) { it.name = ct; it.nameAuto = false }
         }
         if (!playing && norm(match.lastTitle) != norm(title) && match.lastTitle != null) return true
