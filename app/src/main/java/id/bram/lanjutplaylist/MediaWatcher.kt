@@ -154,6 +154,9 @@ class MediaWatcher : NotificationListenerService() {
         var lastSkipAt = 0L
         var lastSkipTitle: String? = null
         var firstTitle: String? = null
+        var batchUntil = 0L
+        var firstTrackId: String? = null
+        var playSentAt = 0L
     }
 
     private val handler = Handler(Looper.getMainLooper())
@@ -453,6 +456,60 @@ class MediaWatcher : NotificationListenerService() {
         msg?.let { toast(it) }
     }
 
+    /**
+     * Spotify: the session exposes the upcoming queue (~50 tracks) with track ids, and allows
+     * "next" even while paused. So: find the saved track in the queue, press "next" exactly
+     * that many times, then play + seek. If it's further than the queue shows, jump a whole
+     * queue-length and look again.
+     */
+    private fun stepSpotify(r: Resume, c: MediaController, now: Long): Boolean {
+        if (now < r.batchUntil) return true
+        val st = c.playbackState
+        val playing = st?.state == PlaybackState.STATE_PLAYING
+        val curId = trackIdOf(c)
+        val title = c.metadata?.getString(MediaMetadata.METADATA_KEY_TITLE)
+
+        if (isTarget(r, c, title)) {
+            if (!playing) {
+                if (now - r.playSentAt > 1500) { c.transportControls.play(); r.playSentAt = now }
+                return true
+            }
+            if (r.pos > 3000) {
+                val dur = c.metadata?.getLong(MediaMetadata.METADATA_KEY_DURATION) ?: 0
+                c.transportControls.seekTo(if (dur > 0 && r.pos > dur - 5000) maxOf(0, dur - 5000) else r.pos)
+            }
+            r.doneAt = now
+            if (r.skips > 0) toast("Lanjut dari \"${r.title}\" (lompat ${r.skips} lagu)")
+            return true
+        }
+
+        // Back at the first track after jumping → the saved track isn't in this playlist.
+        if (r.firstTrackId == null) r.firstTrackId = curId ?: title
+        else if (r.skips > 0 && (curId ?: title) == r.firstTrackId) {
+            finish("Lagu terakhir tidak ada di playlist ini"); return false
+        }
+        if (r.skips >= 400) { finish("Lagu terakhir tidak ketemu"); return false }
+
+        val q = c.queue.orEmpty()
+        val active = st?.activeQueueItemId ?: -1
+        val from = q.indexOfFirst { it.queueId == active }.let { if (it < 0) 0 else it }
+        val target = (from + 1 until q.size).firstOrNull { i ->
+            val d = q[i].description
+            if (r.trackId != null && d.mediaId != null) d.mediaId == r.trackId
+            else norm(d.title?.toString()) == norm(r.title)
+        }
+        val n = when {
+            target != null -> target - from
+            q.size > from + 1 -> q.size - 1 - from   // not in view yet: jump to the end of what we see
+            else -> 1
+        }
+        if (r.skips == 0) toast("Mencari \"${r.title}\"…")
+        repeat(n) { k -> handler.postDelayed({ c.transportControls.skipToNext() }, k * 250L) }
+        r.skips += n
+        r.batchUntil = now + n * 250L + 1800
+        return true
+    }
+
     private fun isTarget(r: Resume, c: MediaController, title: String?): Boolean {
         if (r.trackId != null) trackIdOf(c)?.let { return it == r.trackId }
         return norm(title) == norm(r.title)
@@ -486,6 +543,8 @@ class MediaWatcher : NotificationListenerService() {
             else if (now - r.started > 7000) r.seenChange = true
             else return true
         }
+
+        if (r.service == "spotify") return stepSpotify(r, c, now)
 
         if (isTarget(r, c, title)) {
             if (!playing && now - r.started < 20_000) return true
