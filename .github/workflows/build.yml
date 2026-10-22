@@ -25,7 +25,18 @@ jobs:
         with:
           gradle-version: 8.9
 
+      - name: Cek password kunci
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_PASSWORD" ]; then
+            echo "::error::Secret KEYSTORE_PASSWORD belum diisi (Settings > Secrets and variables > Actions)"
+            exit 1
+          fi
+
       - name: Build debug APK
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
         run: gradle assembleDebug
 
       - name: Upload APK
@@ -42,7 +53,7 @@ jobs:
       - name: Publish release (latest)
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0-build${{ github.run_number }}
+          tag_name: v1.1-build${{ github.run_number }}
           name: Lanjut Playlist build ${{ github.run_number }}
           make_latest: true
           files: LanjutPlaylist-apk.zip
