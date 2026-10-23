@@ -101,10 +101,25 @@ object RadioClient {
     val nowTitle: String?
         get() {
             val c = controller ?: return null
-            val t = c.mediaMetadata.title?.toString()?.trim()
-            val st = c.currentMediaItem?.mediaMetadata?.title?.toString()
-            return t?.takeIf { it.isNotEmpty() && it != st }
+            val md = c.mediaMetadata
+            val t = md.title?.toString()?.trim()?.takeIf { usable(it) } ?: return null
+            // Some players split "Artist - Title" into two fields; put it back together.
+            val a = md.artist?.toString()?.trim()?.takeIf { usable(it) && !t.contains(it) }
+            return if (a != null) "$a - $t" else t
         }
+
+    /** Split "Artist - Title" for display. */
+    val nowSong: Pair<String?, String>?
+        get() {
+            val t = nowTitle ?: return null
+            val i = t.indexOf(" - ")
+            return if (i > 0) t.substring(0, i).trim() to t.substring(i + 3).trim() else null to t
+        }
+
+    private fun usable(s: String): Boolean {
+        val st = stationId?.let { id -> controller?.currentMediaItem?.mediaMetadata?.station?.toString() }
+        return s.isNotEmpty() && s != "-" && !s.equals("unknown", true) && !s.equals("live", true) && s != st
+    }
 
     private fun connect(c: Context, then: (MediaController) -> Unit) {
         controller?.takeIf { it.isConnected }?.let { then(it); return }
@@ -168,7 +183,8 @@ object RadioClient {
         status = null
         changed()
         connect(c) { mc ->
-            val md = MediaMetadata.Builder().setTitle(s.name).setArtist(s.info).setStation(s.name).build()
+            // No title/artist here: the item's fields would override the song title from the stream (ICY).
+            val md = MediaMetadata.Builder().setStation(s.name).setAlbumTitle(s.info).build()
             mc.setMediaItem(MediaItem.Builder().setUri(url).setMediaId(s.id).setMediaMetadata(md).build())
             mc.prepare()
             mc.play()

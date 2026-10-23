@@ -270,6 +270,7 @@ class MainActivity : AppCompatActivity() {
     private fun refreshList() {
         activeSub = null; activeBtn = null; activeBadge = null; activeCard = null
         radioSub = null; radioBtn = null; radioBadge = null; radioCardId = null; vizView = null
+        songTv = null; artistTv = null
         listBox.removeAllViews()
         if (tab == "radio") { refreshRadioList(); return }
         val list = Store.all(this).filter { it.service == tab }
@@ -411,6 +412,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private var vizView: VizView? = null
+    private var songTv: TextView? = null
+    private var artistTv: TextView? = null
+    private var shownSong: String? = "\u0000"
 
     private fun radioCard(st: Station, isCur: Boolean): View {
         val outer = LinearLayout(this).apply {
@@ -450,6 +454,19 @@ class MainActivity : AppCompatActivity() {
         row.addView(btn, LinearLayout.LayoutParams(dp(52), dp(52)).apply { leftMargin = dp(10) })
         if (isCur) {
             radioSub = sub; radioBtn = btn; radioBadge = badge; radioCardId = st.id
+            // Now-playing block: big song title + artist, fades when the song changes.
+            val sTv = TextView(this).apply {
+                textSize = 22f; setTextColor(Color.WHITE); typeface = Typeface.DEFAULT_BOLD
+                isSingleLine = true; ellipsize = android.text.TextUtils.TruncateAt.MARQUEE
+                marqueeRepeatLimit = -1; isSelected = true; isFocusable = false
+            }
+            val aTv = TextView(this).apply {
+                textSize = 15f; setTextColor(Color.parseColor("#FFCC80"))
+                isSingleLine = true; ellipsize = android.text.TextUtils.TruncateAt.END
+            }
+            outer.addView(sTv, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) })
+            outer.addView(aTv)
+            songTv = sTv; artistTv = aTv; shownSong = "\u0000"
             val v = VizView(this)
             outer.addView(v, LinearLayout.LayoutParams(-1, dp(110)).apply { topMargin = dp(10); rightMargin = dp(6) })
             vizView = v
@@ -474,13 +491,33 @@ class MainActivity : AppCompatActivity() {
             RadioClient.hasItem -> "  ·  ❚❚ DIJEDA"
             else -> ""
         }
-        val t = RadioClient.status ?: RadioClient.nowTitle?.let { "♪ $it" }
+        val t = RadioClient.status
         sub.text = t ?: ""
         sub.visibility = if (t == null) View.GONE else View.VISIBLE
         sub.setTextColor(if (RadioClient.status != null) Color.parseColor("#FFB74D") else Color.WHITE)
         btn.text = if (playing || buffering) "❚❚" else "▶"
         btn.textSize = if (playing || buffering) 18f else 22f
         vizView?.let { it.active = playing; it.kick() }
+        val song = RadioClient.nowSong
+        val key = song?.let { "${it.first}|${it.second}" }
+        if (key != shownSong) {
+            shownSong = key
+            val sTv = songTv; val aTv = artistTv
+            if (sTv != null && aTv != null) {
+                val apply = {
+                    sTv.text = song?.second ?: st.name
+                    aTv.text = song?.first ?: (if (song == null) "Siaran langsung" else st.name)
+                    sTv.isSelected = true
+                    sTv.animate().alpha(1f).setDuration(350).start()
+                    aTv.animate().alpha(1f).setDuration(350).start()
+                }
+                if (sTv.text.isNullOrEmpty()) apply()
+                else {
+                    aTv.animate().alpha(0f).setDuration(250).start()
+                    sTv.animate().alpha(0f).setDuration(250).withEndAction(apply).start()
+                }
+            }
+        }
         refreshNow()
     }
 
