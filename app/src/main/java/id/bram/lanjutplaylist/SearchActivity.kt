@@ -35,6 +35,8 @@ class SearchActivity : AppCompatActivity() {
 
     companion object { private const val REQ_VOICE = 7 }
 
+    private val radioMode get() = intent.getStringExtra("mode") == "radio"
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val root = LinearLayout(this).apply {
@@ -44,7 +46,7 @@ class SearchActivity : AppCompatActivity() {
         setContentView(root)
 
         root.addView(TextView(this).apply {
-            text = "Cari playlist"; textSize = 26f; setTextColor(Color.WHITE); typeface = Typeface.DEFAULT_BOLD
+            text = if (radioMode) "Cari radio" else "Cari playlist"; textSize = 26f; setTextColor(Color.WHITE); typeface = Typeface.DEFAULT_BOLD
         })
 
         val bar = LinearLayout(this).apply {
@@ -52,7 +54,7 @@ class SearchActivity : AppCompatActivity() {
             setPadding(0, dp(12), 0, dp(8))
         }
         input = EditText(this).apply {
-            hint = "mis. lagu 90an indonesia"; setTextColor(Color.WHITE); setHintTextColor(dim)
+            hint = if (radioMode) "mis. Prambors, dangdut, Bandung" else "mis. lagu 90an indonesia"; setTextColor(Color.WHITE); setHintTextColor(dim)
             textSize = 17f; isSingleLine = true; imeOptions = EditorInfo.IME_ACTION_SEARCH
             setPadding(dp(14), dp(12), dp(14), dp(12)); background = rounded(card, 12)
             setOnEditorActionListener { _, a, e ->
@@ -70,7 +72,8 @@ class SearchActivity : AppCompatActivity() {
         results = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 0, 0, dp(24)) }
         root.addView(ScrollView(this).apply { addView(results) }, LinearLayout.LayoutParams(-1, 0, 1f))
 
-        if (Store.apiKey(this) == null) status.text = "API key belum diisi — isi dulu di layar utama."
+        if (radioMode) status.text = "Cari nama radio, kota, atau genre (dari direktori Radio Browser)."
+        else if (Store.apiKey(this) == null) status.text = "API key belum diisi — isi dulu di layar utama."
         else status.text = "Hasil dari playlist publik YouTube / YouTube Music."
         input.requestFocus()
     }
@@ -87,7 +90,7 @@ class SearchActivity : AppCompatActivity() {
         val i = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
             .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             .putExtra(RecognizerIntent.EXTRA_LANGUAGE, "id-ID")
-            .putExtra(RecognizerIntent.EXTRA_PROMPT, "Sebutkan playlist yang dicari")
+            .putExtra(RecognizerIntent.EXTRA_PROMPT, if (radioMode) "Sebutkan radio yang dicari" else "Sebutkan playlist yang dicari")
         try {
             @Suppress("DEPRECATION") startActivityForResult(i, REQ_VOICE)
         } catch (_: Exception) {
@@ -108,6 +111,7 @@ class SearchActivity : AppCompatActivity() {
     private fun doSearch() {
         val q = input.text.toString().trim()
         if (q.isEmpty()) return
+        if (radioMode) { doRadioSearch(q); return }
         val key = Store.apiKey(this) ?: run { status.text = "API key belum diisi — isi dulu di layar utama."; return }
         (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(input.windowToken, 0)
         status.text = "Mencari \"$q\"…"
@@ -121,6 +125,69 @@ class SearchActivity : AppCompatActivity() {
                 }.onFailure { status.text = "Gagal mencari: ${it.message}" }
             }
         }.start()
+    }
+
+    private fun doRadioSearch(q: String) {
+        (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(input.windowToken, 0)
+        status.text = "Mencari radio \"$q\"…"
+        results.removeAllViews()
+        Thread {
+            val res = try {
+                var l = RadioApi.search(q, indonesiaOnly = true)
+                if (l.isEmpty()) l = RadioApi.search(q, indonesiaOnly = false)
+                Result.success(l)
+            } catch (e: Exception) { Result.failure(e) }
+            runOnUiThread {
+                res.onSuccess { list ->
+                    status.text = if (list.isEmpty()) "Tidak ada radio untuk \"$q\"" else "${list.size} radio ditemukan"
+                    list.forEach { results.addView(radioRow(it), LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(10) }) }
+                }.onFailure { status.text = "Gagal mencari: ${it.message}" }
+            }
+        }.start()
+    }
+
+    private fun radioRow(h: RadioApi.Hit): View {
+        val orange = Color.parseColor("#FB8C00")
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(12), dp(10), dp(10), dp(10)); background = rounded(card, 12)
+        }
+        val texts = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 0, dp(8), 0) }
+        texts.addView(TextView(this).apply {
+            text = h.name; textSize = 16f; setTextColor(Color.WHITE); typeface = Typeface.DEFAULT_BOLD; maxLines = 2
+        })
+        texts.addView(TextView(this).apply {
+            text = listOf(h.city, h.codec + (if (h.bitrate > 0) " ${h.bitrate}k" else ""), if (h.ok) "" else "⚠ kadang mati")
+                .filter { it.isNotBlank() }.joinToString("  ·  ")
+            textSize = 13f; setTextColor(dim); maxLines = 1
+        })
+        box.addView(texts, LinearLayout.LayoutParams(0, -2, 1f))
+        val btns = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val save = TextView(this).apply {
+            textSize = 14f; setTextColor(Color.WHITE); typeface = Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+        }
+        fun mark(done: Boolean) {
+            save.text = if (done) "✓ Tersimpan" else "+ Simpan"
+            save.background = rounded(if (done) Color.parseColor("#2E7D32") else orange, 10)
+            save.isEnabled = !done
+        }
+        mark(RadioStore.all(this).any { it.url == h.url })
+        save.setOnClickListener {
+            RadioStore.add(this, h.name, h.city, h.url)
+            mark(true)
+            Toast.makeText(this, "\"${h.name}\" disimpan", Toast.LENGTH_SHORT).show()
+        }
+        btns.addView(save)
+        btns.addView(TextView(this).apply {
+            text = "▶ Coba"; textSize = 13f; setTextColor(Color.WHITE); gravity = Gravity.CENTER
+            setPadding(dp(12), dp(6), dp(12), dp(6))
+            setOnClickListener {
+                RadioClient.play(this@SearchActivity, Station("preview", h.name, h.city, h.name, url = h.url, custom = true))
+            }
+        }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) })
+        box.addView(btns)
+        return box
     }
 
     private fun row(f: YtApi.Found): View {

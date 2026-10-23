@@ -33,6 +33,20 @@ class MainActivity : AppCompatActivity() {
     private var activeBadge: TextView? = null
     private var activeCard: Playlist? = null
     private var listSig = ""
+    private lateinit var tabBar: LinearLayout
+    private lateinit var addRow: LinearLayout
+    private val musicOnly = ArrayList<View>()
+    private val ytOnly = ArrayList<View>()
+    private var radioSub: TextView? = null
+    private var radioBtn: TextView? = null
+    private var radioBadge: TextView? = null
+    private var radioCardId: String? = null
+    private val radioListener: () -> Unit = { handler.post { refreshLive() } }
+
+    /** Current tab: "ytm", "spotify" or "radio". */
+    private var tab: String
+        get() = getSharedPreferences("lanjut", MODE_PRIVATE).getString("tab", "ytm") ?: "ytm"
+        set(v) { getSharedPreferences("lanjut", MODE_PRIVATE).edit().putString("tab", v).apply() }
     private val handler = Handler(Looper.getMainLooper())
     private val refresher = object : Runnable {
         override fun run() { refreshNow(); refreshLive(); handler.postDelayed(this, 1000) }
@@ -59,7 +73,7 @@ class MainActivity : AppCompatActivity() {
             textSize = 28f; setTextColor(Color.WHITE); typeface = Typeface.DEFAULT_BOLD
         })
         root.addView(TextView(this).apply {
-            text = "Tap playlist untuk lanjut dari lagu terakhir — YouTube Music & Spotify"
+            text = "Lanjut dari lagu terakhir — YouTube Music, Spotify & Radio"
             textSize = 14f; setTextColor(dim); setPadding(0, dp(2), 0, dp(14))
         })
 
@@ -72,20 +86,19 @@ class MainActivity : AppCompatActivity() {
             background = rounded(Color.parseColor("#2A1A1A"), 12)
             setOnClickListener { MediaWatcher.instance?.takeIf { it.resuming }?.cancelResume() }
         }
-        root.addView(nowText, lp(bottom = 14))
+        root.addView(nowText, lp(bottom = 12))
+
+        tabBar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        root.addView(tabBar, lp(bottom = 12))
 
         listBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(listBox)
 
-        val addRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        addRow.addView(button("🔍  Cari", red) {
-            startActivity(Intent(this, SearchActivity::class.java))
-        }, LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = dp(6) })
-        addRow.addView(button("+  Link", Color.parseColor("#424242")) { showAddDialog("", null) },
-            LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = dp(6) })
+        addRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         root.addView(addRow, lp(top = 6, bottom = 18))
 
         root.addView(CheckBox(this).apply {
+            musicOnly.add(this)
             text = "Lanjut dari detik terakhir (bukan dari awal lagu)"
             setTextColor(Color.WHITE); isChecked = seekToPos
             buttonTintList = android.content.res.ColorStateList.valueOf(red)
@@ -97,10 +110,12 @@ class MainActivity : AppCompatActivity() {
             background = rounded(card, 12)
             setOnClickListener { askApiKey() }
         }
+        ytOnly.add(apiText)
         root.addView(apiText, lp(top = 10))
         root.addView(TextView(this).apply {
             text = "Tips: di YouTube Music / Spotify buka playlist → Bagikan → pilih \"Lanjut Playlist\" untuk menambah cepat."
             textSize = 13f; setTextColor(dim); setPadding(0, dp(10), 0, dp(10))
+            musicOnly.add(this)
         })
         root.addView(TextView(this).apply {
             text = "Info sesi (diagnostik)"
@@ -118,13 +133,55 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        refreshPerm(); refreshList(); refreshApi()
+        RadioClient.listeners.add(radioListener)
+        refreshPerm(); refreshTabs(); refreshList(); refreshApi()
         handler.post(refresher)
     }
 
     override fun onPause() {
         super.onPause()
+        RadioClient.listeners.remove(radioListener)
         handler.removeCallbacks(refresher)
+    }
+
+    // ---------------------------------------------------------------- tabs
+
+    private fun refreshTabs() {
+        tabBar.removeAllViews()
+        val tabs = listOf("ytm" to "YT Music", "spotify" to "Spotify", "radio" to "📻 Radio")
+        val colors = mapOf("ytm" to red, "spotify" to Color.parseColor("#1DB954"), "radio" to Color.parseColor("#FB8C00"))
+        tabs.forEachIndexed { i, (key, label) ->
+            val sel = key == tab
+            tabBar.addView(TextView(this).apply {
+                text = label; textSize = 15f; gravity = Gravity.CENTER; typeface = Typeface.DEFAULT_BOLD
+                setTextColor(if (sel) Color.WHITE else dim)
+                setPadding(dp(6), dp(12), dp(6), dp(12))
+                background = rounded(if (sel) colors[key]!! else card, 12)
+                setOnClickListener { if (tab != key) { tab = key; refreshTabs(); listSig = ""; refreshList() } }
+            }, LinearLayout.LayoutParams(0, -2, 1f).apply {
+                if (i > 0) leftMargin = dp(4); if (i < tabs.size - 1) rightMargin = dp(4)
+            })
+        }
+        musicOnly.forEach { it.visibility = if (tab == "radio") View.GONE else View.VISIBLE }
+        ytOnly.forEach { it.visibility = if (tab == "ytm") View.VISIBLE else View.GONE }
+
+        addRow.removeAllViews()
+        val grey = Color.parseColor("#424242")
+        val half = { left: Boolean -> LinearLayout.LayoutParams(0, -2, 1f).apply { if (left) rightMargin = dp(6) else leftMargin = dp(6) } }
+        when (tab) {
+            "ytm" -> {
+                addRow.addView(button("🔍  Cari", red) { startActivity(Intent(this, SearchActivity::class.java)) }, half(true))
+                addRow.addView(button("+  Link", grey) { showAddDialog("", null) }, half(false))
+            }
+            "spotify" -> addRow.addView(button("+  Link Spotify", grey) { showAddDialog("", null) },
+                LinearLayout.LayoutParams(-1, -2))
+            else -> {
+                addRow.addView(button("🔍  Cari radio", Color.parseColor("#FB8C00")) {
+                    startActivity(Intent(this, SearchActivity::class.java).putExtra("mode", "radio"))
+                }, half(true))
+                addRow.addView(button("+  Link stream", grey) { showAddRadioDialog() }, half(false))
+            }
+        }
     }
 
     // ---------------------------------------------------------------- views
@@ -196,7 +253,12 @@ class MainActivity : AppCompatActivity() {
     private fun refreshNow() {
         val w = MediaWatcher.instance
         val activeName = Store.activeId(this)?.let { Store.get(this, it)?.name }
+        val rs = RadioClient.stationId?.let { RadioStore.get(this, it) }
         nowText.text = when {
+            RadioClient.status != null && tab == "radio" -> "📻 ${RadioClient.status}"
+            RadioClient.isPlaying || RadioClient.isBuffering ->
+                "📻 ${rs?.name ?: "Radio"}" + (RadioClient.nowTitle?.let { "\n♪ $it" } ?: "") +
+                    (if (RadioClient.isBuffering) "\nMenyambung…" else "")
             w == null -> "Pemantau belum berjalan (cek izin akses notifikasi)"
             w.nowTitle == null -> "YouTube Music / Spotify sedang tidak memutar apa-apa"
             w.resuming -> "⏩ Sedang mencari lagu terakhir… (${w.nowTitle})\nTap di sini untuk berhenti"
@@ -207,12 +269,15 @@ class MainActivity : AppCompatActivity() {
 
     private fun refreshList() {
         activeSub = null; activeBtn = null; activeBadge = null; activeCard = null
+        radioSub = null; radioBtn = null; radioBadge = null; radioCardId = null
         listBox.removeAllViews()
-        val list = Store.all(this)
+        if (tab == "radio") { refreshRadioList(); return }
+        val list = Store.all(this).filter { it.service == tab }
         val active = Store.activeId(this)
         if (list.isEmpty()) {
             listBox.addView(TextView(this).apply {
-                text = "Belum ada playlist. Tambahkan dengan tombol di bawah atau lewat Bagikan dari YouTube Music / Spotify."
+                text = if (tab == "spotify") "Belum ada playlist Spotify. Di Spotify: buka playlist → Bagikan → Lanjut Playlist, atau tempel link lewat tombol di bawah."
+                else "Belum ada playlist. Tambahkan dengan tombol di bawah atau lewat Bagikan dari YouTube Music."
                 setTextColor(dim); textSize = 15f; setPadding(0, dp(8), 0, dp(16))
             })
         }
@@ -275,6 +340,7 @@ class MainActivity : AppCompatActivity() {
 
     /** Update the active card every second: live position, playing/paused, ▶ / ❚❚ button. */
     private fun refreshLive() {
+        if (tab == "radio") { refreshRadioLive(); return }
         val w = MediaWatcher.instance
         // Rebuild the list when the active playlist or its track changes.
         val act = Store.activeId(this)
@@ -311,6 +377,139 @@ class MainActivity : AppCompatActivity() {
             else -> play(p, false)
         }
         handler.postDelayed({ refreshLive() }, 400)
+    }
+
+    // ---------------------------------------------------------------- radio
+
+    private val orange = Color.parseColor("#FB8C00")
+
+    private fun refreshRadioList() {
+        val list = RadioStore.all(this)
+        val cur = RadioClient.stationId
+        if (list.isEmpty()) listBox.addView(TextView(this).apply {
+            text = "Daftar radio kosong."; setTextColor(dim); textSize = 15f; setPadding(0, dp(8), 0, dp(16))
+        })
+        for (st in list) listBox.addView(radioCard(st, st.id == cur), lp(bottom = 10))
+        refreshRadioLive(rebuild = false)
+        refreshNow()
+    }
+
+    private fun radioCard(st: Station, isCur: Boolean): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(12), dp(10), dp(12))
+            background = rounded(card, 14).apply { if (isCur) setStroke(dp(2), orange) }
+            isClickable = true
+            setOnClickListener { onRadioButton(st) }
+            setOnLongClickListener { showRadioMenu(st); true }
+        }
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        box.addView(TextView(this).apply {
+            text = (if (isCur) "📻  " else "") + st.name
+            textSize = 19f; setTextColor(Color.WHITE); typeface = Typeface.DEFAULT_BOLD
+        })
+        val badge = TextView(this).apply {
+            text = st.info; textSize = 12f; typeface = Typeface.DEFAULT_BOLD; setTextColor(orange)
+            setPadding(0, dp(2), 0, 0)
+        }
+        box.addView(badge)
+        val sub = TextView(this).apply {
+            textSize = 13f; setTextColor(dim); setPadding(0, dp(2), 0, 0)
+            text = if (st.url == null) "Link stream dicari otomatis saat diputar" else ""
+            visibility = if (text.isEmpty()) View.GONE else View.VISIBLE
+        }
+        box.addView(sub)
+        row.addView(box, LinearLayout.LayoutParams(0, -2, 1f))
+        val btn = TextView(this).apply {
+            text = "▶"; textSize = 22f; setTextColor(Color.WHITE); gravity = Gravity.CENTER
+            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(orange) }
+            setOnClickListener { onRadioButton(st) }
+        }
+        row.addView(btn, LinearLayout.LayoutParams(dp(52), dp(52)).apply { leftMargin = dp(10) })
+        if (isCur) { radioSub = sub; radioBtn = btn; radioBadge = badge; radioCardId = st.id }
+        return row
+    }
+
+    private fun refreshRadioLive(rebuild: Boolean = true) {
+        if (rebuild && RadioClient.stationId != radioCardId && RadioClient.stationId?.let { RadioStore.get(this, it) } != null) {
+            refreshList(); return
+        }
+        val st = radioCardId?.let { RadioStore.get(this, it) } ?: return
+        val btn = radioBtn ?: return
+        val badge = radioBadge ?: return
+        val sub = radioSub ?: return
+        val playing = RadioClient.isPlaying
+        val buffering = RadioClient.isBuffering
+        badge.text = st.info + when {
+            buffering -> "  ·  ⏳ MENYAMBUNG"
+            playing -> "  ·  ▶ SEDANG DIPUTAR"
+            RadioClient.hasItem -> "  ·  ❚❚ DIJEDA"
+            else -> ""
+        }
+        val t = RadioClient.status ?: RadioClient.nowTitle?.let { "♪ $it" }
+        sub.text = t ?: ""
+        sub.visibility = if (t == null) View.GONE else View.VISIBLE
+        sub.setTextColor(if (RadioClient.status != null) Color.parseColor("#FFB74D") else Color.WHITE)
+        btn.text = if (playing || buffering) "❚❚" else "▶"
+        btn.textSize = if (playing || buffering) 18f else 22f
+        refreshNow()
+    }
+
+    private fun onRadioButton(st: Station) {
+        askNotifPermission()
+        val cur = RadioClient.stationId == st.id
+        when {
+            cur && (RadioClient.isPlaying || RadioClient.isBuffering) -> RadioClient.pause()
+            cur && RadioClient.hasItem && RadioClient.status == null -> RadioClient.resume(this)
+            else -> RadioClient.play(this, RadioStore.get(this, st.id) ?: st)
+        }
+        handler.postDelayed({ refreshList() }, 300)
+    }
+
+    private fun askNotifPermission() {
+        if (android.os.Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 11)
+        }
+    }
+
+    private fun showRadioMenu(st: Station) {
+        val items = arrayOf("Ganti nama", "Ganti link stream", "Cari ulang link stream otomatis",
+            "Pindah ke atas", "Pindah ke bawah", "Hapus dari daftar", "Kembalikan daftar radio default")
+        AlertDialog.Builder(this).setTitle(st.name).setItems(items) { _, i ->
+            when (i) {
+                0 -> askText("Ganti nama", st.name) { t -> RadioStore.update(this, st.id) { it.name = t }; refreshList() }
+                1 -> askText("Link stream (http…)", st.url ?: "") { t ->
+                    if (!t.startsWith("http")) toast("Link stream harus diawali http")
+                    else { RadioStore.update(this, st.id) { it.url = t; it.custom = true }; refreshList() }
+                }
+                2 -> { RadioStore.update(this, st.id) { it.url = null; it.custom = false }; toast("Link akan dicari ulang saat diputar"); refreshList() }
+                3 -> { RadioStore.move(this, st.id, -1); refreshList() }
+                4 -> { RadioStore.move(this, st.id, 1); refreshList() }
+                5 -> AlertDialog.Builder(this).setMessage("Hapus \"${st.name}\"?")
+                    .setPositiveButton("Hapus") { _, _ -> RadioStore.remove(this, st.id); refreshList() }
+                    .setNegativeButton("Batal", null).show()
+                6 -> AlertDialog.Builder(this).setMessage("Kembalikan daftar radio Jakarta bawaan? Radio yang kamu tambah sendiri tetap ada.")
+                    .setPositiveButton("Ya") { _, _ -> RadioStore.resetDefaults(this); refreshList() }
+                    .setNegativeButton("Batal", null).show()
+            }
+        }.show()
+    }
+
+    private fun showAddRadioDialog() {
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), 0) }
+        val nameEt = EditText(this).apply { hint = "Nama radio" }
+        val infoEt = EditText(this).apply { hint = "Keterangan (mis. 98.7 FM · Jakarta)" }
+        val urlEt = EditText(this).apply { hint = "Link stream (http…)"; inputType = InputType.TYPE_TEXT_VARIATION_URI }
+        box.addView(nameEt); box.addView(infoEt); box.addView(urlEt)
+        AlertDialog.Builder(this).setTitle("Tambah radio").setView(box)
+            .setPositiveButton("Simpan") { _, _ ->
+                val u = urlEt.text.toString().trim()
+                val n = nameEt.text.toString().trim().ifEmpty { "Radio" }
+                if (!u.startsWith("http")) { toast("Link stream harus diawali http"); return@setPositiveButton }
+                RadioStore.add(this, n, infoEt.text.toString().trim(), u); refreshList()
+            }
+            .setNegativeButton("Batal", null).show()
     }
 
     // ---------------------------------------------------------------- actions
@@ -382,6 +581,7 @@ class MainActivity : AppCompatActivity() {
                 val n = nameEt.text.toString().trim()
                 val auto = n.isEmpty()
                 val added = Store.add(this, if (auto) defaultName(id) else n, id, auto, service)
+                if (tab != service) { tab = service; refreshTabs() }
                 refreshList()
                 prefetch(added)
             }
