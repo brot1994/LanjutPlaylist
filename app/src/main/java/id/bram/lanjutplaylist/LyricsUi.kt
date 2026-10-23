@@ -75,13 +75,14 @@ class LyricsPanel(context: Context) : LinearLayout(context) {
         val l = Lyrics.lines
         if (l == null) {
             rows.forEach { it.visibility = GONE }
-            info.text = Lyrics.status ?: (if (Lyrics.plain != null) "Lirik tanpa timing — buka ⛶ Karaoke" else "Lirik muncul kalau radio mengirim judul lagu")
+            info.text = Lyrics.status ?: (if (Lyrics.plain != null) "Lirik tanpa timing — buka ⛶ Karaoke"
+                else if (Lyrics.isRadio) "Lirik muncul kalau radio mengirim judul lagu" else "Mencari lirik…")
             return
         }
         val idx = Lyrics.currentIndex()
         if (idx == shownIdx) return
         shownIdx = idx
-        info.text = "Tap baris yang sedang dinyanyikan untuk menyinkronkan"
+        info.text = if (Lyrics.isRadio) "Tap baris yang sedang dinyanyikan untuk menyinkronkan" else "Lirik sinkron otomatis"
         firstIdx = maxOf(0, idx)
         rows.forEachIndexed { i, tv ->
             val li = firstIdx + i
@@ -162,8 +163,8 @@ class LyricsActivity : AppCompatActivity() {
     }
 
     private fun update() {
-        val st = RadioClient.stationId?.let { RadioStore.get(this, it) }
-        head.text = listOfNotNull(Lyrics.title, st?.name).joinToString("  ·  ").ifEmpty { "Radio" }
+        val st = if (Lyrics.isRadio) RadioClient.stationId?.let { RadioStore.get(this, it) } else null
+        head.text = listOfNotNull(Lyrics.title, st?.name).joinToString("  ·  ").ifEmpty { "Lirik" }
         val src: Any? = Lyrics.lines ?: Lyrics.plain ?: Lyrics.status
         if (src !== builtFor) build()
         if (views.isEmpty()) return

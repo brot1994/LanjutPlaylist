@@ -30,6 +30,10 @@ object Lyrics {
     private var startedAt = 0L
     /** User correction, ms. */
     var offset = 0L; private set
+    /** For YT Music / Spotify: exact playback position from the app. null → radio (clock since title change). */
+    private var posProvider: (() -> Long)? = null
+    val isRadio get() = posProvider == null
+    private var duration = 0L
 
     val listeners = LinkedHashSet<() -> Unit>()
     private fun changed() = main.post { listeners.toList().forEach { try { it() } catch (_: Exception) {} } }
@@ -38,12 +42,26 @@ object Lyrics {
 
     /** Called whenever the radio's "now playing" title may have changed. */
     fun onTitle(t: String?) {
-        if (t == title) return
+        if (t == title && posProvider == null) return
+        posProvider = null; duration = 0
+        val (a, s) = split(t)
+        load(t, a, s)
+    }
+
+    /** Called for YT Music / Spotify with the exact track info and a live position source. */
+    fun onMusic(title: String?, artist: String?, durMs: Long, pos: () -> Long) {
+        val t = title?.let { if (artist.isNullOrBlank()) it else "$artist - $it" }
+        posProvider = pos
+        if (t == this.title) return
+        duration = durMs
+        load(t, artist?.trim()?.ifEmpty { null }, title?.let { clean(it) })
+    }
+
+    private fun load(t: String?, a: String?, s: String?) {
         title = t
         startedAt = SystemClock.elapsedRealtime()
         offset = 0
         lines = null; plain = null
-        val (a, s) = split(t)
         artist = a; song = s
         if (s == null) { status = if (t == null) null else "Info lagu dari radio tidak lengkap"; changed(); return }
         val key = "${a ?: ""}|$s".lowercase()
@@ -51,7 +69,7 @@ object Lyrics {
         status = "Mencari lirik…"
         changed()
         Thread {
-            val res = try { fetch(a, s) } catch (e: Exception) { null to null }
+            val res = try { fetch(a, s, duration) } catch (e: Exception) { null to null }
             main.post {
                 cache[key] = res
                 if (title != t) return@post
@@ -69,12 +87,14 @@ object Lyrics {
         return if (i > 0) x.substring(0, i).trim() to clean(x.substring(i + 3)) else null to clean(x)
     }
 
-    private fun clean(s: String) = s.replace(Regex("\\s*[\\(\\[][^)\\]]*(radio edit|edit|remaster|live|version|feat\\.?)[^)\\]]*[\\)\\]]", RegexOption.IGNORE_CASE), "")
+    private fun clean(s: String) = s
+        .replace(Regex("\\s+-\\s+[^-]*(edit|remaster|version|live|mono|stereo)[^-]*$", RegexOption.IGNORE_CASE), "")
+        .replace(Regex("\\s*[\\(\\[][^)\\]]*(radio edit|edit|remaster|live|version|feat\\.?)[^)\\]]*[\\)\\]]", RegexOption.IGNORE_CASE), "")
         .trim().ifEmpty { null }
 
     // ------------------------------------------------------------ timing
 
-    fun position(): Long = SystemClock.elapsedRealtime() - startedAt + offset
+    fun position(): Long = (posProvider?.invoke() ?: (SystemClock.elapsedRealtime() - startedAt)) + offset
 
     fun nudge(ms: Long) { offset += ms; changed() }
 
@@ -82,7 +102,7 @@ object Lyrics {
     fun syncTo(i: Int) {
         val l = lines ?: return
         if (i !in l.indices) return
-        offset = l[i].t - (SystemClock.elapsedRealtime() - startedAt)
+        offset = l[i].t - (posProvider?.invoke() ?: (SystemClock.elapsedRealtime() - startedAt))
         changed()
     }
 
@@ -106,8 +126,17 @@ object Lyrics {
 
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
 
-    private fun fetch(artist: String?, song: String): Pair<List<Line>?, String?> {
+    private fun fetch(artist: String?, song: String, durMs: Long = 0): Pair<List<Line>?, String?> {
         if (artist != null) {
+            // Spotify lists "A, B" and YT Music "A & B": the first artist matches best.
+            val first = artist.split(Regex("\\s*(,|&| x | feat\\.? | ft\\.? )\\s*")).first().trim()
+            val dur = if (durMs > 0) "&duration=${durMs / 1000}" else ""
+            for (a in listOf(artist, first).distinct()) {
+                http("https://lrclib.net/api/get?artist_name=${enc(a)}&track_name=${enc(song)}$dur")?.let {
+                    val r = from(JSONObject(it))
+                    if (r.first != null) return r
+                }
+            }
             http("https://lrclib.net/api/get?artist_name=${enc(artist)}&track_name=${enc(song)}")?.let {
                 val o = JSONObject(it)
                 val r = from(o)

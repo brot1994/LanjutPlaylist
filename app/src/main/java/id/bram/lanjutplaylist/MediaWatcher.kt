@@ -265,6 +265,12 @@ class MediaWatcher : NotificationListenerService() {
         nowArtist = c?.metadata?.getString(MediaMetadata.METADATA_KEY_ARTIST)
         nowPlaying = c?.playbackState?.state == PlaybackState.STATE_PLAYING
         nowService = when (c?.packageName) { SPOTIFY -> "spotify"; YTM -> "ytm"; else -> null }
+        if (nowPlaying && c != null && !RadioClient.isPlaying) {
+            val svc = nowService ?: "ytm"
+            Lyrics.onMusic(nowTitle, nowArtist, c.metadata?.getLong(MediaMetadata.METADATA_KEY_DURATION) ?: 0) {
+                live(svc)?.pos ?: 0
+            }
+        }
         if (pending != null) stepResume() else record()
         listeners.toList().forEach { try { it() } catch (_: Exception) {} }
     }

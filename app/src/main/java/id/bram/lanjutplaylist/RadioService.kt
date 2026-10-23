@@ -88,7 +88,8 @@ object RadioClient {
 
     val listeners = LinkedHashSet<() -> Unit>()
     private fun changed() {
-        Lyrics.onTitle(if (hasItem) nowTitle else null)
+        // Radio drives the lyrics only while it is the thing playing.
+        if (isPlaying || isBuffering) Lyrics.onTitle(nowTitle)
         listeners.toList().forEach { try { it() } catch (_: Exception) {} }
     }
 

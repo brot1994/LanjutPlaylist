@@ -326,7 +326,23 @@ class MainActivity : AppCompatActivity() {
             setOnClickListener { onButton(p) }
         }
         row.addView(btn, LinearLayout.LayoutParams(dp(56), dp(56)).apply { leftMargin = dp(10) })
-        if (isActive) { activeSub = subTv; activeBtn = btn; activeBadge = badgeTv; activeCard = p }
+        if (isActive) {
+            activeSub = subTv; activeBtn = btn; activeBadge = badgeTv; activeCard = p
+            // Lyrics under the playing playlist (only once its app is actually on).
+            if (liveFor(p) != null) {
+                val outer = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    background = row.background; setPadding(dp(16), dp(14), dp(10), dp(12))
+                    isClickable = true
+                    setOnClickListener { onButton(p) }
+                    setOnLongClickListener { showMenu(p); true }
+                }
+                row.background = null; row.setPadding(0, 0, 0, 0); row.isClickable = false
+                outer.addView(row)
+                outer.addView(LyricsPanel(this), LinearLayout.LayoutParams(-1, -2).apply { rightMargin = dp(6) })
+                return outer
+            }
+        }
         return row
     }
 
