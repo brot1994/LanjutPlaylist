@@ -269,7 +269,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun refreshList() {
         activeSub = null; activeBtn = null; activeBadge = null; activeCard = null
-        radioSub = null; radioBtn = null; radioBadge = null; radioCardId = null
+        radioSub = null; radioBtn = null; radioBadge = null; radioCardId = null; vizView = null
         listBox.removeAllViews()
         if (tab == "radio") { refreshRadioList(); return }
         val list = Store.all(this).filter { it.service == tab }
@@ -394,15 +394,21 @@ class MainActivity : AppCompatActivity() {
         refreshNow()
     }
 
+    private var vizView: VizView? = null
+
     private fun radioCard(st: Station, isCur: Boolean): View {
-        val row = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+        val outer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(12), dp(10), dp(12))
             background = rounded(card, 14).apply { if (isCur) setStroke(dp(2), orange) }
             isClickable = true
             setOnClickListener { onRadioButton(st) }
             setOnLongClickListener { showRadioMenu(st); true }
         }
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+        }
+        outer.addView(row)
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         box.addView(TextView(this).apply {
             text = (if (isCur) "📻  " else "") + st.name
@@ -426,8 +432,13 @@ class MainActivity : AppCompatActivity() {
             setOnClickListener { onRadioButton(st) }
         }
         row.addView(btn, LinearLayout.LayoutParams(dp(52), dp(52)).apply { leftMargin = dp(10) })
-        if (isCur) { radioSub = sub; radioBtn = btn; radioBadge = badge; radioCardId = st.id }
-        return row
+        if (isCur) {
+            radioSub = sub; radioBtn = btn; radioBadge = badge; radioCardId = st.id
+            val v = VizView(this)
+            outer.addView(v, LinearLayout.LayoutParams(-1, dp(110)).apply { topMargin = dp(10); rightMargin = dp(6) })
+            vizView = v
+        }
+        return outer
     }
 
     private fun refreshRadioLive(rebuild: Boolean = true) {
@@ -452,6 +463,7 @@ class MainActivity : AppCompatActivity() {
         sub.setTextColor(if (RadioClient.status != null) Color.parseColor("#FFB74D") else Color.WHITE)
         btn.text = if (playing || buffering) "❚❚" else "▶"
         btn.textSize = if (playing || buffering) 18f else 22f
+        vizView?.let { it.active = playing; it.kick() }
         refreshNow()
     }
 

@@ -176,6 +176,7 @@ class AutoService : MediaBrowserServiceCompat() {
             .putString(MediaMetadataCompat.METADATA_KEY_TITLE, RadioClient.nowTitle ?: st?.name ?: "Radio")
             .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, (st?.name ?: "") + (st?.info?.let { " · $it" } ?: ""))
             .putString(MediaMetadataCompat.METADATA_KEY_DISPLAY_DESCRIPTION, "Radio")
+        st?.let { mb.putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, Viz.stationArt(it.name, it.info)) }
         session.setMetadata(mb.build())
         val state = when {
             RadioClient.isBuffering -> PlaybackStateCompat.STATE_BUFFERING

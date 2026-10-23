@@ -13,7 +13,14 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.audio.AudioProcessor
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.audio.AudioSink
+import androidx.media3.exoplayer.audio.DefaultAudioSink
+import androidx.media3.exoplayer.audio.TeeAudioProcessor
+import java.nio.ByteBuffer
 import androidx.media3.session.MediaController
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
@@ -24,12 +31,24 @@ import id.bram.lanjutplaylist.RadioStore.lastStation
  * Plays radio streams in the background (ExoPlayer + media notification).
  * Audio focus is handled, so starting the radio pauses YT Music / Spotify and vice versa.
  */
+@androidx.annotation.OptIn(markerClass = [UnstableApi::class])
 class RadioService : MediaSessionService() {
     private var session: MediaSession? = null
 
     override fun onCreate() {
         super.onCreate()
-        val player = ExoPlayer.Builder(this)
+        // Tap the decoded audio for the on-screen visualizer.
+        val tee = TeeAudioProcessor(object : TeeAudioProcessor.AudioBufferSink {
+            override fun flush(sampleRateHz: Int, channelCount: Int, encoding: Int) =
+                Viz.configure(sampleRateHz, channelCount, encoding)
+            override fun handleBuffer(buffer: ByteBuffer) = Viz.feed(buffer)
+        })
+        val renderers = object : DefaultRenderersFactory(this) {
+            override fun buildAudioSink(
+                context: Context, enableFloatOutput: Boolean, enableAudioTrackPlaybackParams: Boolean
+            ): AudioSink = DefaultAudioSink.Builder(context).setAudioProcessors(arrayOf<AudioProcessor>(tee)).build()
+        }
+        val player = ExoPlayer.Builder(this, renderers)
             .setAudioAttributes(
                 AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build(),
                 true
