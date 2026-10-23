@@ -87,7 +87,10 @@ object RadioClient {
     var status: String? = null; private set
 
     val listeners = LinkedHashSet<() -> Unit>()
-    private fun changed() = listeners.toList().forEach { try { it() } catch (_: Exception) {} }
+    private fun changed() {
+        Lyrics.onTitle(if (hasItem) nowTitle else null)
+        listeners.toList().forEach { try { it() } catch (_: Exception) {} }
+    }
 
     val isPlaying get() = controller?.isPlaying == true
     val isBuffering get() = controller?.let { it.playWhenReady && it.playbackState == Player.STATE_BUFFERING } == true

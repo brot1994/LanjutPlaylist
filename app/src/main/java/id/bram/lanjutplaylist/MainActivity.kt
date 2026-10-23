@@ -437,6 +437,7 @@ class MainActivity : AppCompatActivity() {
             val v = VizView(this)
             outer.addView(v, LinearLayout.LayoutParams(-1, dp(110)).apply { topMargin = dp(10); rightMargin = dp(6) })
             vizView = v
+            outer.addView(LyricsPanel(this), LinearLayout.LayoutParams(-1, -2).apply { rightMargin = dp(6) })
         }
         return outer
     }

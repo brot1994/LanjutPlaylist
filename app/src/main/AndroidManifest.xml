@@ -59,6 +59,11 @@
         </service>
 
         <activity
+            android:name=".LyricsActivity"
+            android:exported="false"
+            android:theme="@style/AppTheme" />
+
+        <activity
             android:name=".SearchActivity"
             android:exported="false"
             android:windowSoftInputMode="adjustResize" />
